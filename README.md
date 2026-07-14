@@ -37,8 +37,13 @@ logged in with `az login`.
 ```
 
 This creates a resource group, a storage account with a `videos` blob
-container, a Linux App Service plan (B1), and a Python 3.12 web app — and
-wires the connection string and gunicorn startup command into the app.
+container, a Linux App Service plan (**F1 Free tier** by default), and a
+Python 3.12 web app — and wires the connection string and gunicorn startup
+command into the app. To use a paid tier instead:
+
+```bash
+./deploy/azure-setup.sh <app-name> eastus B1   # ~$13/month, no daily CPU quota
+```
 
 ### 2. Deploy the code
 
@@ -73,6 +78,34 @@ All optional, via environment variables (App Settings on Azure):
 | `SECRET_KEY` | dev value | Flask session/flash signing key — set a real one in production |
 | `MAX_UPLOAD_MB` | `512` | Maximum upload size |
 | `DATA_DIR` | `/home/data` on Azure, `instance/` locally | Where SQLite (and local uploads) live |
+
+## Cost
+
+The setup is tuned for minimal spend:
+
+| Resource | Tier | Cost |
+|---|---|---|
+| App Service plan | F1 Free (default) | **$0/month** |
+| Blob Storage | Standard LRS, Hot tier | ~$0.02/GB/month stored |
+| Bandwidth (egress) | — | First 100 GB/month free, then ~$0.087/GB |
+
+- **The web app costs nothing.** Because players stream video straight from
+  Blob Storage via SAS URLs, the Flask app only serves small HTML pages —
+  the Free tier's 60 CPU-minutes/day quota is plenty. The trade-off is no
+  Always On: after ~20 idle minutes the app sleeps and the next visit takes
+  a few seconds to wake it. If that bothers you, `B1` (~$13/month) removes
+  the quotas.
+- **Storage is pennies.** 100 GB of videos is about $2/month. LRS is the
+  cheapest redundancy, and Hot is deliberately chosen over Cool/Cold: the
+  colder tiers charge per-GB retrieval fees, so for videos that actually get
+  watched they cost *more*, not less.
+- **Bandwidth is the only cost that scales with popularity.** Every video
+  view is egress from Blob Storage. 100 GB/month free covers roughly
+  1,000 views of a 100 MB video; beyond that it's ~$8.70 per additional
+  100 GB. If the site becomes high-traffic, put Azure CDN or Front Door in
+  front of the blob container rather than scaling the web app.
+- SQLite instead of a managed database saves the ~$13+/month a database
+  service would add — there is nothing else billable in this setup.
 
 ## Notes
 
