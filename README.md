@@ -29,16 +29,19 @@ Open http://127.0.0.1:5000. Uploads go to `instance/uploads/` and metadata to
 
 Open [Azure Cloud Shell](https://shell.azure.com) (Bash) and run:
 
+Optionally run `gh auth login` first (the GitHub CLI is preinstalled in
+Cloud Shell) so the script can set the GitHub secret for you. Then:
+
 ```bash
 git clone https://github.com/<owner>/<repo>.git
 cd <repo>
-./deploy/azure-setup.sh <app-name> <owner>/<repo> main
+./deploy/azure-setup.sh <app-name> <owner>/<repo>
 ```
 
 For example:
 
 ```bash
-./deploy/azure-setup.sh myvideohost dgc20/VideoHostingSite main
+./deploy/azure-setup.sh myvideohost dgc20/VideoHostingSite
 ```
 
 The script does everything in one run:
@@ -47,18 +50,20 @@ The script does everything in one run:
    container, a Linux App Service plan (**F1 Free tier** — $0/month), and a
    Python 3.12 web app, with the connection string and gunicorn startup
    command wired in.
-2. Connects the web app to your GitHub repo: it prompts once with a GitHub
-   device-code login, stores the publish profile as a repo secret, and
-   commits a deploy workflow to `.github/workflows/` on your branch.
+2. Fetches the app's publish profile and — if the GitHub CLI is
+   authenticated — sets the repo variable `AZURE_WEBAPP_NAME` and secret
+   `AZURE_WEBAPP_PUBLISH_PROFILE`. (If not, it prints both values for you to
+   add under **Settings → Secrets and variables → Actions**.)
 
-That workflow commit triggers the first deployment immediately, and **every
-subsequent push to the branch deploys automatically** (watch the repo's
-Actions tab). Your site goes live at `https://<app-name>.azurewebsites.net`.
+The repo already contains the deploy workflow
+(`.github/workflows/azure-deploy.yml`), so once those two values are set,
+**every push to `main` deploys automatically** (watch the repo's Actions
+tab). Your site goes live at `https://<app-name>.azurewebsites.net`.
 
 To use a paid tier instead of Free:
 
 ```bash
-./deploy/azure-setup.sh <app-name> <owner>/<repo> main eastus B1   # ~$13/month
+./deploy/azure-setup.sh <app-name> <owner>/<repo> eastus B1   # ~$13/month
 ```
 
 ## Configuration
