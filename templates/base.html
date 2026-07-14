@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}VideoHost{% endblock %}</title>
+  <title>{% block title %}BJJ Video Hosting{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body>
   <header class="site-header">
-    <a class="brand" href="{{ url_for('index') }}">▶ VideoHost</a>
+    <a class="brand" href="{{ url_for('index') }}">🥋 BJJ Video Hosting</a>
     <form class="search" action="{{ url_for('index') }}" method="get">
       <input type="search" name="q" placeholder="Search videos…" value="{{ q or '' }}">
       <button type="submit">Search</button>

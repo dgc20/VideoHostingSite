@@ -108,7 +108,7 @@ def signup():
         )
         conn.commit()
         auth.login_user(user_id)
-        flash("Welcome to VideoHost!", "success")
+        flash("Welcome to BJJ Video Hosting!", "success")
         return redirect(url_for("index"))
 
     return render_template("signup.html", username="", email="")
