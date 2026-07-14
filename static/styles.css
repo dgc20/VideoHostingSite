@@ -139,4 +139,35 @@ main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
 }
 .watch-page h1 { margin: 1rem 0 0.4rem; font-size: 1.4rem; }
 .watch-page .description { margin-top: 1rem; white-space: pre-wrap; }
-.watch-page form { margin-top: 1.5rem; }
+.watch-page > form { margin-top: 1.5rem; }
+
+.comments { margin-top: 2.5rem; border-top: 1px solid var(--surface-2); padding-top: 1.5rem; }
+.comment-form { margin-bottom: 1.75rem; }
+.comment-form textarea {
+  display: block;
+  width: 100%;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.6rem;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+.comment { padding: 0.85rem 0; border-bottom: 1px solid var(--surface); }
+.comment-head { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
+.comment-author { font-weight: 600; color: var(--text); }
+.comment-time { color: var(--muted); }
+.comment-delete {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+.comment-delete:hover { color: var(--accent); }
+.comment-body { margin: 0.35rem 0 0; white-space: pre-wrap; word-break: break-word; }
