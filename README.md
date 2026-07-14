@@ -1,7 +1,8 @@
-# VideoHost
+# BJJ Video Hosting
 
-A simple video hosting website built with Python (Flask), designed to deploy
-to Azure App Service with videos stored in Azure Blob Storage.
+A simple Brazilian Jiu-Jitsu video hosting website built with Python (Flask),
+designed to deploy to Azure App Service with videos stored in Azure Blob
+Storage.
 
 ## Features
 
