@@ -37,9 +37,6 @@ Open http://127.0.0.1:5000. Uploads go to `instance/uploads/` and metadata to
 
 Open [Azure Cloud Shell](https://shell.azure.com) (Bash) and run:
 
-Optionally run `gh auth login` first (the GitHub CLI is preinstalled in
-Cloud Shell) so the script can set the GitHub secret for you. Then:
-
 ```bash
 git clone https://github.com/<owner>/<repo>.git
 cd <repo>
@@ -58,22 +55,24 @@ The script does everything in one run:
    container, a Linux App Service plan (**F1 Free tier** — $0/month), and a
    Python 3.12 web app, with the connection string and gunicorn startup
    command wired in.
-2. Fetches the app's publish profile and — if the GitHub CLI is
-   authenticated — sets the repo variable `AZURE_WEBAPP_NAME` and secret
-   `AZURE_WEBAPP_PUBLISH_PROFILE`. (If not, it prints both values for you to
-   add under **Settings → Secrets and variables → Actions**.)
+2. Configures GitHub Actions push-to-deploy (the same mechanism as the Azure
+   Portal's Deployment Center): it sets up OIDC and commits a single
+   workflow, `main_<app-name>.yml`, that deploys on every push to `main`.
+   It prompts once to authorize GitHub.
 
-The repo already contains the deploy workflow
-(`.github/workflows/azure-deploy.yml`), so once those two values are set,
-**every push to `main` deploys automatically** (watch the repo's Actions
-tab). Your site goes live at `https://<app-name>.azurewebsites.net`.
+After it finishes, **every push to `main` deploys automatically** (watch the
+repo's Actions tab), and the first deploy has already been kicked off. Your
+site goes live at `https://<app-name>.azurewebsites.net`.
+
+> If you set the app up through the Azure Portal instead, its Deployment
+> Center produces the same `main_<app-name>.yml` workflow — so don't also
+> commit a second deploy workflow, or every push will deploy twice.
 
 To use a paid tier instead of Free:
 
 ```bash
 ./deploy/azure-setup.sh <app-name> <owner>/<repo> eastus B1   # ~$13/month
 ```
-test
 ## Configuration
 
 All optional, via environment variables (App Settings on Azure):
