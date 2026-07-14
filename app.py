@@ -17,6 +17,7 @@ from flask import (
     Response,
     abort,
     flash,
+    g,
     redirect,
     render_template,
     request,
@@ -25,6 +26,7 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
+import auth
 import db
 import storage as storage_module
 
@@ -41,6 +43,11 @@ app.config.update(
     DATA_DIR=os.environ.get("DATA_DIR", _default_data_dir),
     AZURE_STORAGE_CONNECTION_STRING=os.environ.get("AZURE_STORAGE_CONNECTION_STRING"),
     AZURE_CONTAINER_NAME=os.environ.get("AZURE_CONTAINER_NAME", "videos"),
+    # Session cookie hardening. SECURE defaults off so local http works;
+    # set SESSION_COOKIE_SECURE=1 in production (Azure serves over HTTPS).
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "0") == "1",
 )
 os.makedirs(app.config["DATA_DIR"], exist_ok=True)
 app.config["DATABASE"] = os.path.join(app.config["DATA_DIR"], "videos.db")
@@ -49,29 +56,125 @@ app.config["UPLOAD_DIR"] = os.path.join(app.config["DATA_DIR"], "uploads")
 db.init_db(app)
 storage = storage_module.create_storage(app.config)
 
+# Load the logged-in user and enforce CSRF on every request.
+app.before_request(auth.load_logged_in_user)
+app.before_request(auth.check_csrf)
+
+
+@app.context_processor
+def inject_globals():
+    return {"current_user": g.get("user"), "csrf_token": auth.get_csrf_token}
+
 
 def _allowed(filename):
     return os.path.splitext(filename)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _safe_next(target):
+    """Only allow same-site relative redirect targets (prevents open redirect)."""
+    if target and target.startswith("/") and not target.startswith("//"):
+        return target
+    return None
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if g.user:
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        error = auth.validate_registration(username, email, password)
+        conn = db.get_db()
+        if error is None:
+            existing = conn.execute(
+                "SELECT 1 FROM users WHERE username = ? OR email = ?",
+                (username, email),
+            ).fetchone()
+            if existing:
+                error = "That username or email is already taken."
+
+        if error:
+            flash(error, "error")
+            return render_template("signup.html", username=username, email=email)
+
+        user_id = uuid.uuid4().hex
+        conn.execute(
+            "INSERT INTO users (id, username, email, password_hash)"
+            " VALUES (?, ?, ?, ?)",
+            (user_id, username, email, auth.hash_password(password)),
+        )
+        conn.commit()
+        auth.login_user(user_id)
+        flash("Welcome to VideoHost!", "success")
+        return redirect(url_for("index"))
+
+    return render_template("signup.html", username="", email="")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if g.user:
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        identifier = request.form.get("identifier", "").strip()
+        password = request.form.get("password", "")
+        user = db.get_db().execute(
+            "SELECT * FROM users WHERE username = ? OR email = ?",
+            (identifier, identifier.lower()),
+        ).fetchone()
+
+        if user and auth.verify_password(user["password_hash"], password):
+            auth.login_user(user["id"])
+            flash("Signed in.", "success")
+            return redirect(_safe_next(request.args.get("next")) or url_for("index"))
+
+        flash("Invalid username/email or password.", "error")
+        return render_template("login.html", identifier=identifier)
+
+    return render_template("login.html", identifier="")
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    auth.logout_user()
+    flash("Signed out.", "success")
+    return redirect(url_for("index"))
+
+
+@app.route("/account")
+@auth.login_required
+def account():
+    videos = db.get_db().execute(
+        "SELECT * FROM videos WHERE user_id = ? ORDER BY uploaded_at DESC",
+        (g.user["id"],),
+    ).fetchall()
+    return render_template("account.html", videos=videos)
 
 
 @app.route("/")
 def index():
     q = request.args.get("q", "").strip()
     conn = db.get_db()
+    base = (
+        "SELECT v.*, u.username AS uploader FROM videos v"
+        " LEFT JOIN users u ON u.id = v.user_id"
+    )
     if q:
         videos = conn.execute(
-            "SELECT * FROM videos WHERE title LIKE ? OR description LIKE ?"
-            " ORDER BY uploaded_at DESC",
+            base + " WHERE v.title LIKE ? OR v.description LIKE ?"
+            " ORDER BY v.uploaded_at DESC",
             (f"%{q}%", f"%{q}%"),
         ).fetchall()
     else:
-        videos = conn.execute(
-            "SELECT * FROM videos ORDER BY uploaded_at DESC"
-        ).fetchall()
+        videos = conn.execute(base + " ORDER BY v.uploaded_at DESC").fetchall()
     return render_template("index.html", videos=videos, q=q)
 
 
 @app.route("/upload", methods=["GET", "POST"])
+@auth.login_required
 def upload():
     if request.method == "POST":
         file = request.files.get("video")
@@ -106,8 +209,9 @@ def upload():
         conn = db.get_db()
         conn.execute(
             "INSERT INTO videos (id, title, description, stored_name,"
-            " content_type, size_bytes) VALUES (?, ?, ?, ?, ?, ?)",
-            (video_id, title, description, stored_name, content_type, size),
+            " content_type, size_bytes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (video_id, title, description, stored_name, content_type, size,
+             g.user["id"]),
         )
         conn.commit()
         flash("Video uploaded.", "success")
@@ -120,7 +224,9 @@ def upload():
 def watch(video_id):
     conn = db.get_db()
     video = conn.execute(
-        "SELECT * FROM videos WHERE id = ?", (video_id,)
+        "SELECT v.*, u.username AS uploader FROM videos v"
+        " LEFT JOIN users u ON u.id = v.user_id WHERE v.id = ?",
+        (video_id,),
     ).fetchone()
     if video is None:
         abort(404)
@@ -131,7 +237,8 @@ def watch(video_id):
         src = storage.playback_url(video["stored_name"])
     else:
         src = url_for("media", video_id=video_id)
-    return render_template("watch.html", video=video, src=src)
+    is_owner = g.user is not None and g.user["id"] == video["user_id"]
+    return render_template("watch.html", video=video, src=src, is_owner=is_owner)
 
 
 @app.route("/media/<video_id>")
@@ -191,6 +298,7 @@ def media(video_id):
 
 
 @app.route("/delete/<video_id>", methods=["POST"])
+@auth.login_required
 def delete(video_id):
     conn = db.get_db()
     video = conn.execute(
@@ -198,6 +306,8 @@ def delete(video_id):
     ).fetchone()
     if video is None:
         abort(404)
+    if video["user_id"] != g.user["id"]:
+        abort(403)
     storage.delete(video["stored_name"])
     conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
     conn.commit()
@@ -215,7 +325,20 @@ def filesize(num):
 
 @app.errorhandler(404)
 def not_found(_e):
-    return render_template("404.html"), 404
+    return render_template("error.html", code=404,
+                           message="That page or video doesn't exist."), 404
+
+
+@app.errorhandler(403)
+def forbidden(_e):
+    return render_template("error.html", code=403,
+                           message="You don't have permission to do that."), 403
+
+
+@app.errorhandler(400)
+def bad_request(e):
+    message = getattr(e, "description", None) or "Bad request."
+    return render_template("error.html", code=400, message=message), 400
 
 
 @app.errorhandler(413)

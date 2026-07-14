@@ -1,8 +1,16 @@
-"""SQLite helpers for video metadata."""
+"""SQLite helpers for users and video metadata."""
 import sqlite3
 from flask import g, current_app
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE,
+    email         TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS videos (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -11,7 +19,8 @@ CREATE TABLE IF NOT EXISTS videos (
     content_type TEXT NOT NULL,
     size_bytes  INTEGER NOT NULL,
     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-    views       INTEGER NOT NULL DEFAULT 0
+    views       INTEGER NOT NULL DEFAULT 0,
+    user_id     TEXT
 );
 """
 
@@ -29,10 +38,19 @@ def close_db(_exc=None):
         db.close()
 
 
+def _migrate(db):
+    """Bring an existing database up to the current schema."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(videos)")}
+    if "user_id" not in columns:
+        # Videos uploaded before accounts existed keep user_id = NULL.
+        db.execute("ALTER TABLE videos ADD COLUMN user_id TEXT")
+
+
 def init_db(app):
     with app.app_context():
         db = sqlite3.connect(app.config["DATABASE"])
         db.executescript(SCHEMA)
+        _migrate(db)
         db.commit()
         db.close()
     app.teardown_appcontext(close_db)

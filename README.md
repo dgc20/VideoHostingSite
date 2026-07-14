@@ -5,14 +5,20 @@ to Azure App Service with videos stored in Azure Blob Storage.
 
 ## Features
 
-- Upload videos (MP4, WebM, Ogg, MOV, M4V) with a title and description
-- Browse all videos in a grid, with search
-- Watch pages with an HTML5 player, view counts, and delete
+- **Accounts** — sign up, log in, and log out (session-based auth with
+  hashed passwords and CSRF-protected forms)
+- Upload videos (MP4, WebM, Ogg, MOV, M4V) with a title and description —
+  requires an account; each video is owned by its uploader
+- Browse all videos in a grid, with search; anyone can watch
+- Watch pages with an HTML5 player, view counts, uploader credit, and a
+  delete button shown only to the owner
+- An account page listing your own uploads
 - Two storage backends, selected automatically:
   - **Local disk** (default) — with HTTP Range support so seeking works
   - **Azure Blob Storage** — used when `AZURE_STORAGE_CONNECTION_STRING` is
     set; players stream directly from Azure via short-lived SAS URLs
-- Video metadata in SQLite (kept on the App Service persistent `/home` share)
+- Users and video metadata in SQLite (kept on the App Service persistent
+  `/home` share)
 
 ## Run locally
 
@@ -74,7 +80,8 @@ All optional, via environment variables (App Settings on Azure):
 |---|---|---|
 | `AZURE_STORAGE_CONNECTION_STRING` | unset | When set, videos are stored in Azure Blob Storage |
 | `AZURE_CONTAINER_NAME` | `videos` | Blob container name |
-| `SECRET_KEY` | dev value | Flask session/flash signing key — set a real one in production |
+| `SECRET_KEY` | dev value | Signs session cookies — **set a strong random value in production** (the setup script does this) |
+| `SESSION_COOKIE_SECURE` | `0` | Set to `1` to send the session cookie only over HTTPS (the setup script sets this on Azure) |
 | `MAX_UPLOAD_MB` | `512` | Maximum upload size |
 | `DATA_DIR` | `/home/data` on Azure, `instance/` locally | Where SQLite (and local uploads) live |
 
@@ -108,7 +115,9 @@ The setup is tuned for minimal spend:
 
 ## Notes
 
-- The site is intentionally auth-free; anyone with the URL can upload and
-  delete. Add authentication before using it beyond personal/demo purposes.
+- Accounts are self-service: anyone can sign up, then upload videos and
+  delete their own. There's no email verification or admin role — add those
+  if you need them. Watching is open to everyone (no login required).
 - SQLite is fine for a single App Service instance. If you scale out to
-  multiple instances, move metadata to Azure Database for PostgreSQL.
+  multiple instances, move users and metadata to Azure Database for
+  PostgreSQL, and switch sessions to a shared store.

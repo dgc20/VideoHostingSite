@@ -9,7 +9,10 @@
           <div class="thumb">▶</div>
           <div class="card-body">
             <h3>{{ v['title'] }}</h3>
-            <p class="meta">{{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }} · {{ v['uploaded_at'] }} UTC</p>
+            <p class="meta">
+              {{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }}
+              {% if v['uploader'] %}· {{ v['uploader'] }}{% endif %}
+            </p>
           </div>
         </a>
       {% endfor %}

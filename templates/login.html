@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Log in — VideoHost{% endblock %}
+{% block content %}
+  <div class="form-page narrow">
+    <h1>Log in</h1>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>
+        Username or email
+        <input type="text" name="identifier" value="{{ identifier }}" autofocus required>
+      </label>
+      <label>
+        Password
+        <input type="password" name="password" required>
+      </label>
+      <button class="btn btn-primary" type="submit">Log in</button>
+    </form>
+    <p class="hint">No account? <a href="{{ url_for('signup') }}">Sign up</a>.</p>
+  </div>
+{% endblock %}
