@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ current_user['username'] }} — VideoHost{% endblock %}
+{% block content %}
+  <div class="account-head">
+    <h1>{{ current_user['username'] }}</h1>
+    <p class="meta">{{ current_user['email'] }} · joined {{ current_user['created_at'] }} UTC</p>
+  </div>
+
+  <h2 class="section-title">Your videos ({{ videos|length }})</h2>
+  {% if videos %}
+    <div class="grid">
+      {% for v in videos %}
+        <a class="card" href="{{ url_for('watch', video_id=v['id']) }}">
+          <div class="thumb">▶</div>
+          <div class="card-body">
+            <h3>{{ v['title'] }}</h3>
+            <p class="meta">{{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }} · {{ v['uploaded_at'] }} UTC</p>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty">
+      <p>You haven't uploaded any videos yet.</p>
+      <a class="btn btn-primary" href="{{ url_for('upload') }}">Upload one</a>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -88,6 +88,7 @@ az webapp config appsettings set \
   --settings \
     AZURE_STORAGE_CONNECTION_STRING="$CONNECTION_STRING" \
     SECRET_KEY="$(openssl rand -hex 32)" \
+    SESSION_COOKIE_SECURE=1 \
     SCM_DO_BUILD_DURING_DEPLOYMENT=true \
   --output none
 

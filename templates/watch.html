@@ -6,13 +6,17 @@
     <h1>{{ video['title'] }}</h1>
     <p class="meta">
       {{ video['views'] }} view{{ '' if video['views'] == 1 else 's' }}
+      {% if video['uploader'] %}· by {{ video['uploader'] }}{% endif %}
       · uploaded {{ video['uploaded_at'] }} UTC
       · {{ video['size_bytes'] | filesize }}
     </p>
     {% if video['description'] %}<p class="description">{{ video['description'] }}</p>{% endif %}
-    <form method="post" action="{{ url_for('delete', video_id=video['id']) }}"
-          onsubmit="return confirm('Delete this video permanently?');">
-      <button class="btn btn-danger" type="submit">Delete video</button>
-    </form>
+    {% if is_owner %}
+      <form method="post" action="{{ url_for('delete', video_id=video['id']) }}"
+            onsubmit="return confirm('Delete this video permanently?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-danger" type="submit">Delete video</button>
+      </form>
+    {% endif %}
   </div>
 {% endblock %}

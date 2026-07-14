@@ -13,7 +13,19 @@
       <input type="search" name="q" placeholder="Search videos…" value="{{ q or '' }}">
       <button type="submit">Search</button>
     </form>
-    <a class="btn btn-primary" href="{{ url_for('upload') }}">Upload</a>
+    <nav class="user-nav">
+      {% if current_user %}
+        <a class="btn btn-primary" href="{{ url_for('upload') }}">Upload</a>
+        <a class="who" href="{{ url_for('account') }}">{{ current_user['username'] }}</a>
+        <form method="post" action="{{ url_for('logout') }}" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-ghost">Log out</button>
+        </form>
+      {% else %}
+        <a class="btn btn-ghost" href="{{ url_for('login') }}">Log in</a>
+        <a class="btn btn-primary" href="{{ url_for('signup') }}">Sign up</a>
+      {% endif %}
+    </nav>
   </header>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
