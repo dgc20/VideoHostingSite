@@ -6,13 +6,14 @@
 #   - a resource group
 #   - a storage account + "videos" blob container (video files)
 #   - a Linux App Service plan + Python web app (the Flask site)
-#   - a GitHub Actions workflow committed to your repo, with the publish
-#     profile stored as a repo secret — every push to the branch deploys
+#   - the app's publish profile + name stored on the GitHub repo, so the
+#     committed workflow (.github/workflows/azure-deploy.yml) deploys the
+#     app on every push to main
 #
 # Usage (from Cloud Shell, already logged in to Azure):
-#   ./deploy/azure-setup.sh <app-name> <github-owner/repo> [branch] [region] [sku]
+#   ./deploy/azure-setup.sh <app-name> <github-owner/repo> [region] [sku]
 # e.g.
-#   ./deploy/azure-setup.sh myvideohost dgc20/VideoHostingSite main
+#   ./deploy/azure-setup.sh myvideohost dgc20/VideoHostingSite
 #
 # <app-name> must be globally unique (it becomes <app-name>.azurewebsites.net).
 #
@@ -20,14 +21,13 @@
 # 60 CPU-minutes/day and no Always On (the app sleeps when idle, so the
 # first visit after a quiet period is slow). Since videos stream directly
 # from Blob Storage, the web app does little work and Free goes a long way.
-# Pass B1 (~$13/month) as the fifth argument if you outgrow the quotas.
+# Pass B1 (~$13/month) as the fourth argument if you outgrow the quotas.
 set -euo pipefail
 
-APP_NAME="${1:?Usage: $0 <app-name> <github-owner/repo> [branch] [region] [sku]}"
-GITHUB_REPO="${2:?Usage: $0 <app-name> <github-owner/repo> [branch] [region] [sku]}"
-BRANCH="${3:-main}"
-LOCATION="${4:-eastus}"
-SKU="${5:-F1}"
+APP_NAME="${1:?Usage: $0 <app-name> <github-owner/repo> [region] [sku]}"
+GITHUB_REPO="${2:?Usage: $0 <app-name> <github-owner/repo> [region] [sku]}"
+LOCATION="${3:-eastus}"
+SKU="${4:-F1}"
 RESOURCE_GROUP="${APP_NAME}-rg"
 PLAN_NAME="${APP_NAME}-plan"
 # Storage account names: 3-24 chars, lowercase letters + digits only.
@@ -101,21 +101,37 @@ az webapp config set \
   --startup-file "gunicorn --bind=0.0.0.0:8000 --timeout 600 --workers 1 --threads 8 app:app" \
   --output none
 
-# This prompts once with a GitHub device-code login, then:
-#   - stores the app's publish profile as a secret in the GitHub repo
-#   - commits a deploy workflow to .github/workflows/ on the branch
-# After it finishes, every push to the branch deploys automatically.
-echo "==> Wiring up GitHub Actions push-to-deploy for ${GITHUB_REPO} (${BRANCH})"
-az webapp deployment github-actions add \
-  --name "$APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --repo "$GITHUB_REPO" \
-  --branch "$BRANCH" \
-  --runtime "PYTHON:3.12" \
-  --login-with-github
+# The repo already contains the deploy workflow (.github/workflows/azure-deploy.yml);
+# it just needs the app name and publish profile. If the GitHub CLI is present
+# and authenticated (it is in Azure Cloud Shell after 'gh auth login'), set them
+# automatically; otherwise print the two values to add by hand.
+echo "==> Configuring GitHub Actions push-to-deploy for ${GITHUB_REPO}"
+PUBLISH_PROFILE=$(az webapp deployment list-publishing-profiles \
+  --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --xml)
+
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  gh variable set AZURE_WEBAPP_NAME --repo "$GITHUB_REPO" --body "$APP_NAME"
+  printf '%s' "$PUBLISH_PROFILE" | gh secret set AZURE_WEBAPP_PUBLISH_PROFILE --repo "$GITHUB_REPO"
+  echo "    Set variable AZURE_WEBAPP_NAME and secret AZURE_WEBAPP_PUBLISH_PROFILE."
+  GH_CONFIGURED=1
+else
+  GH_CONFIGURED=0
+fi
 
 echo
 echo "All done."
-echo "  Site URL:     https://${APP_NAME}.azurewebsites.net"
-echo "  Deploys:      push to '${BRANCH}' on ${GITHUB_REPO} (watch the Actions tab)"
-echo "  First deploy: was just triggered by the workflow commit az made"
+echo "  Site URL: https://${APP_NAME}.azurewebsites.net"
+if [ "$GH_CONFIGURED" = 1 ]; then
+  echo "  Deploys:  push to 'main' on ${GITHUB_REPO} (watch the Actions tab)."
+  echo "  Kick off the first deploy now with an empty commit, or just push any change:"
+  echo "    git commit --allow-empty -m 'Trigger deploy' && git push origin main"
+else
+  echo "  One manual step is left — add these to ${GITHUB_REPO} under"
+  echo "  Settings > Secrets and variables > Actions, then push to main:"
+  echo "    - Variable  AZURE_WEBAPP_NAME            = ${APP_NAME}"
+  echo "    - Secret    AZURE_WEBAPP_PUBLISH_PROFILE = the XML below"
+  echo "  (Tip: run 'gh auth login' before this script to have it set these for you.)"
+  echo "----- BEGIN AZURE_WEBAPP_PUBLISH_PROFILE -----"
+  printf '%s\n' "$PUBLISH_PROFILE"
+  echo "----- END AZURE_WEBAPP_PUBLISH_PROFILE -----"
+fi
