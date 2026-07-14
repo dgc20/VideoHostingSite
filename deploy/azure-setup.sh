@@ -1,28 +1,42 @@
 #!/usr/bin/env bash
-# Provisions everything the site needs on Azure and wires it together:
+# One-shot setup for Azure Cloud Shell (https://shell.azure.com).
+#
+# Provisions everything the site needs and wires up GitHub Actions
+# push-to-deploy, in one run:
 #   - a resource group
 #   - a storage account + "videos" blob container (video files)
 #   - a Linux App Service plan + Python web app (the Flask site)
+#   - a GitHub Actions workflow committed to your repo, with the publish
+#     profile stored as a repo secret — every push to the branch deploys
 #
-# Prerequisites: Azure CLI (az) installed and logged in (az login).
-# Usage:
-#   ./deploy/azure-setup.sh <app-name> [region] [sku]
+# Usage (from Cloud Shell, already logged in to Azure):
+#   ./deploy/azure-setup.sh <app-name> <github-owner/repo> [branch] [region] [sku]
+# e.g.
+#   ./deploy/azure-setup.sh myvideohost dgc20/VideoHostingSite main
+#
 # <app-name> must be globally unique (it becomes <app-name>.azurewebsites.net).
 #
 # The default SKU is F1 (Free) to minimize cost: $0/month, but limited to
 # 60 CPU-minutes/day and no Always On (the app sleeps when idle, so the
 # first visit after a quiet period is slow). Since videos stream directly
 # from Blob Storage, the web app does little work and Free goes a long way.
-# Pass B1 (~$13/month) as the third argument if you outgrow the quotas.
+# Pass B1 (~$13/month) as the fifth argument if you outgrow the quotas.
 set -euo pipefail
 
-APP_NAME="${1:?Usage: $0 <app-name> [region] [sku]}"
-LOCATION="${2:-eastus}"
-SKU="${3:-F1}"
+APP_NAME="${1:?Usage: $0 <app-name> <github-owner/repo> [branch] [region] [sku]}"
+GITHUB_REPO="${2:?Usage: $0 <app-name> <github-owner/repo> [branch] [region] [sku]}"
+BRANCH="${3:-main}"
+LOCATION="${4:-eastus}"
+SKU="${5:-F1}"
 RESOURCE_GROUP="${APP_NAME}-rg"
 PLAN_NAME="${APP_NAME}-plan"
 # Storage account names: 3-24 chars, lowercase letters + digits only.
 STORAGE_ACCOUNT="$(echo "${APP_NAME}store" | tr -cd 'a-z0-9' | cut -c1-24)"
+
+if ! az account show --output none 2>/dev/null; then
+  echo "Not logged in to Azure. Run: az login" >&2
+  exit 1
+fi
 
 echo "==> Creating resource group ${RESOURCE_GROUP} in ${LOCATION}"
 az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
@@ -87,11 +101,21 @@ az webapp config set \
   --startup-file "gunicorn --bind=0.0.0.0:8000 --timeout 600 --workers 1 --threads 8 app:app" \
   --output none
 
+# This prompts once with a GitHub device-code login, then:
+#   - stores the app's publish profile as a secret in the GitHub repo
+#   - commits a deploy workflow to .github/workflows/ on the branch
+# After it finishes, every push to the branch deploys automatically.
+echo "==> Wiring up GitHub Actions push-to-deploy for ${GITHUB_REPO} (${BRANCH})"
+az webapp deployment github-actions add \
+  --name "$APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --repo "$GITHUB_REPO" \
+  --branch "$BRANCH" \
+  --runtime "PYTHON:3.12" \
+  --login-with-github
+
 echo
-echo "Done. Deploy the code with either:"
-echo "  1. az webapp up --name $APP_NAME --resource-group $RESOURCE_GROUP   (from the repo root)"
-echo "  2. The GitHub Actions workflow in .github/workflows/azure-deploy.yml"
-echo "     (download the publish profile and save it as the AZURE_WEBAPP_PUBLISH_PROFILE secret):"
-echo "     az webapp deployment list-publishing-profiles --name $APP_NAME --resource-group $RESOURCE_GROUP --xml"
-echo
-echo "Site URL: https://${APP_NAME}.azurewebsites.net"
+echo "All done."
+echo "  Site URL:     https://${APP_NAME}.azurewebsites.net"
+echo "  Deploys:      push to '${BRANCH}' on ${GITHUB_REPO} (watch the Actions tab)"
+echo "  First deploy: was just triggered by the workflow commit az made"

@@ -25,47 +25,41 @@ flask --app app run --debug
 Open http://127.0.0.1:5000. Uploads go to `instance/uploads/` and metadata to
 `instance/videos.db`.
 
-## Deploy to Azure
+## Deploy to Azure (one script, push-to-deploy)
 
-Prerequisite: [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli),
-logged in with `az login`.
-
-### 1. Provision the infrastructure
+Open [Azure Cloud Shell](https://shell.azure.com) (Bash) and run:
 
 ```bash
-./deploy/azure-setup.sh <app-name>        # e.g. ./deploy/azure-setup.sh myvideohost
+git clone https://github.com/<owner>/<repo>.git
+cd <repo>
+./deploy/azure-setup.sh <app-name> <owner>/<repo> main
 ```
 
-This creates a resource group, a storage account with a `videos` blob
-container, a Linux App Service plan (**F1 Free tier** by default), and a
-Python 3.12 web app — and wires the connection string and gunicorn startup
-command into the app. To use a paid tier instead:
+For example:
 
 ```bash
-./deploy/azure-setup.sh <app-name> eastus B1   # ~$13/month, no daily CPU quota
+./deploy/azure-setup.sh myvideohost dgc20/VideoHostingSite main
 ```
 
-### 2. Deploy the code
+The script does everything in one run:
 
-Either push directly from your machine:
+1. Creates a resource group, a storage account with a `videos` blob
+   container, a Linux App Service plan (**F1 Free tier** — $0/month), and a
+   Python 3.12 web app, with the connection string and gunicorn startup
+   command wired in.
+2. Connects the web app to your GitHub repo: it prompts once with a GitHub
+   device-code login, stores the publish profile as a repo secret, and
+   commits a deploy workflow to `.github/workflows/` on your branch.
+
+That workflow commit triggers the first deployment immediately, and **every
+subsequent push to the branch deploys automatically** (watch the repo's
+Actions tab). Your site goes live at `https://<app-name>.azurewebsites.net`.
+
+To use a paid tier instead of Free:
 
 ```bash
-az webapp up --name <app-name> --resource-group <app-name>-rg
+./deploy/azure-setup.sh <app-name> <owner>/<repo> main eastus B1   # ~$13/month
 ```
-
-Or use the included GitHub Actions workflow
-(`.github/workflows/azure-deploy.yml`), which deploys on every push to
-`main`:
-
-1. Set the repository **variable** `AZURE_WEBAPP_NAME` to your app name.
-2. Save the publish profile as the repository **secret**
-   `AZURE_WEBAPP_PUBLISH_PROFILE`:
-   ```bash
-   az webapp deployment list-publishing-profiles \
-     --name <app-name> --resource-group <app-name>-rg --xml
-   ```
-
-Your site is then live at `https://<app-name>.azurewebsites.net`.
 
 ## Configuration
 
