@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}VideoHost — Browse{% endblock %}
+{% block content %}
+  {% if q %}<p class="results-note">Results for “{{ q }}” ({{ videos|length }})</p>{% endif %}
+  {% if videos %}
+    <div class="grid">
+      {% for v in videos %}
+        <a class="card" href="{{ url_for('watch', video_id=v['id']) }}">
+          <div class="thumb">▶</div>
+          <div class="card-body">
+            <h3>{{ v['title'] }}</h3>
+            <p class="meta">{{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }} · {{ v['uploaded_at'] }} UTC</p>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty">
+      <p>No videos yet.</p>
+      <a class="btn btn-primary" href="{{ url_for('upload') }}">Upload the first one</a>
+    </div>
+  {% endif %}
+{% endblock %}

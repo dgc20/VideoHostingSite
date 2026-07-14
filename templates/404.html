@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Not found — VideoHost{% endblock %}
+{% block content %}
+  <div class="empty">
+    <h1>404</h1>
+    <p>That video doesn't exist (or was deleted).</p>
+    <a class="btn btn-primary" href="{{ url_for('index') }}">Back to videos</a>
+  </div>
+{% endblock %}

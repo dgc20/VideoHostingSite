@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}VideoHost{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="{{ url_for('index') }}">▶ VideoHost</a>
+    <form class="search" action="{{ url_for('index') }}" method="get">
+      <input type="search" name="q" placeholder="Search videos…" value="{{ q or '' }}">
+      <button type="submit">Search</button>
+    </form>
+    <a class="btn btn-primary" href="{{ url_for('upload') }}">Upload</a>
+  </header>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flashes">
+        {% for category, message in messages %}
+          <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

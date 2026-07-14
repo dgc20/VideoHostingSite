@@ -1,0 +1,32 @@
+# Deploys the site to Azure App Service on every push to main.
+#
+# One-time setup:
+#   1. Run ./deploy/azure-setup.sh <app-name> to provision Azure resources.
+#   2. Set the AZURE_WEBAPP_NAME repository variable to your <app-name>.
+#   3. Download the publish profile and save it as the repository secret
+#      AZURE_WEBAPP_PUBLISH_PROFILE:
+#      az webapp deployment list-publishing-profiles \
+#        --name <app-name> --resource-group <app-name>-rg --xml
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: .

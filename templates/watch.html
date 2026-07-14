@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ video['title'] }} — VideoHost{% endblock %}
+{% block content %}
+  <div class="watch-page">
+    <video controls preload="metadata" src="{{ src }}"></video>
+    <h1>{{ video['title'] }}</h1>
+    <p class="meta">
+      {{ video['views'] }} view{{ '' if video['views'] == 1 else 's' }}
+      · uploaded {{ video['uploaded_at'] }} UTC
+      · {{ video['size_bytes'] | filesize }}
+    </p>
+    {% if video['description'] %}<p class="description">{{ video['description'] }}</p>{% endif %}
+    <form method="post" action="{{ url_for('delete', video_id=video['id']) }}"
+          onsubmit="return confirm('Delete this video permanently?');">
+      <button class="btn btn-danger" type="submit">Delete video</button>
+    </form>
+  </div>
+{% endblock %}

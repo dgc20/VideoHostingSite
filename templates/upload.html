@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Upload — VideoHost{% endblock %}
+{% block content %}
+  <div class="form-page">
+    <h1>Upload a video</h1>
+    <form method="post" enctype="multipart/form-data">
+      <label>
+        Video file
+        <input type="file" name="video" accept=".mp4,.webm,.ogg,.ogv,.mov,.m4v,video/*" required>
+      </label>
+      <label>
+        Title
+        <input type="text" name="title" maxlength="200" placeholder="Defaults to the file name">
+      </label>
+      <label>
+        Description
+        <textarea name="description" rows="4" maxlength="5000" placeholder="Optional"></textarea>
+      </label>
+      <button class="btn btn-primary" type="submit">Upload</button>
+    </form>
+    <p class="hint">Supported formats: MP4, WebM, Ogg, MOV, M4V. Browsers play MP4 and WebM most reliably.</p>
+  </div>
+{% endblock %}
