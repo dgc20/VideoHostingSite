@@ -102,37 +102,21 @@ az webapp config set \
   --startup-file "gunicorn --bind=0.0.0.0:8000 --timeout 600 --workers 1 --threads 8 app:app" \
   --output none
 
-# The repo already contains the deploy workflow (.github/workflows/azure-deploy.yml);
-# it just needs the app name and publish profile. If the GitHub CLI is present
-# and authenticated (it is in Azure Cloud Shell after 'gh auth login'), set them
-# automatically; otherwise print the two values to add by hand.
-echo "==> Configuring GitHub Actions push-to-deploy for ${GITHUB_REPO}"
-PUBLISH_PROFILE=$(az webapp deployment list-publishing-profiles \
-  --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --xml)
-
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  gh variable set AZURE_WEBAPP_NAME --repo "$GITHUB_REPO" --body "$APP_NAME"
-  printf '%s' "$PUBLISH_PROFILE" | gh secret set AZURE_WEBAPP_PUBLISH_PROFILE --repo "$GITHUB_REPO"
-  echo "    Set variable AZURE_WEBAPP_NAME and secret AZURE_WEBAPP_PUBLISH_PROFILE."
-  GH_CONFIGURED=1
-else
-  GH_CONFIGURED=0
-fi
+# Wire up push-to-deploy. This is the same mechanism the Azure Portal's
+# Deployment Center uses: it configures OIDC (a federated credential + repo
+# secrets) and commits a single workflow, main_<app-name>.yml, that deploys
+# on every push to main. It prompts once to authorize GitHub.
+echo "==> Configuring GitHub Actions push-to-deploy for ${GITHUB_REPO} (branch: main)"
+az webapp deployment github-actions add \
+  --repo "$GITHUB_REPO" \
+  --name "$APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --branch main \
+  --login-with-github
 
 echo
 echo "All done."
 echo "  Site URL: https://${APP_NAME}.azurewebsites.net"
-if [ "$GH_CONFIGURED" = 1 ]; then
-  echo "  Deploys:  push to 'main' on ${GITHUB_REPO} (watch the Actions tab)."
-  echo "  Kick off the first deploy now with an empty commit, or just push any change:"
-  echo "    git commit --allow-empty -m 'Trigger deploy' && git push origin main"
-else
-  echo "  One manual step is left — add these to ${GITHUB_REPO} under"
-  echo "  Settings > Secrets and variables > Actions, then push to main:"
-  echo "    - Variable  AZURE_WEBAPP_NAME            = ${APP_NAME}"
-  echo "    - Secret    AZURE_WEBAPP_PUBLISH_PROFILE = the XML below"
-  echo "  (Tip: run 'gh auth login' before this script to have it set these for you.)"
-  echo "----- BEGIN AZURE_WEBAPP_PUBLISH_PROFILE -----"
-  printf '%s\n' "$PUBLISH_PROFILE"
-  echo "----- END AZURE_WEBAPP_PUBLISH_PROFILE -----"
-fi
+echo "  Deploys:  push to 'main' on ${GITHUB_REPO} (watch the repo's Actions tab)."
+echo "  A workflow (main_${APP_NAME}.yml) was committed to your repo and the"
+echo "  first deploy has already been triggered."
