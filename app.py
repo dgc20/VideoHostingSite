@@ -238,7 +238,56 @@ def watch(video_id):
     else:
         src = url_for("media", video_id=video_id)
     is_owner = g.user is not None and g.user["id"] == video["user_id"]
-    return render_template("watch.html", video=video, src=src, is_owner=is_owner)
+    comments = conn.execute(
+        "SELECT c.id, c.body, c.created_at, c.user_id, u.username"
+        " FROM comments c JOIN users u ON u.id = c.user_id"
+        " WHERE c.video_id = ? ORDER BY c.created_at DESC, c.rowid DESC",
+        (video_id,),
+    ).fetchall()
+    return render_template(
+        "watch.html", video=video, src=src, is_owner=is_owner, comments=comments
+    )
+
+
+@app.route("/watch/<video_id>/comment", methods=["POST"])
+@auth.login_required
+def add_comment(video_id):
+    conn = db.get_db()
+    exists = conn.execute(
+        "SELECT 1 FROM videos WHERE id = ?", (video_id,)
+    ).fetchone()
+    if exists is None:
+        abort(404)
+
+    body = request.form.get("body", "").strip()
+    if not body:
+        flash("Comment can't be empty.", "error")
+    elif len(body) > 2000:
+        flash("Comment is too long (2000 characters max).", "error")
+    else:
+        conn.execute(
+            "INSERT INTO comments (id, video_id, user_id, body)"
+            " VALUES (?, ?, ?, ?)",
+            (uuid.uuid4().hex, video_id, g.user["id"], body),
+        )
+        conn.commit()
+    return redirect(url_for("watch", video_id=video_id) + "#comments")
+
+
+@app.route("/comment/<comment_id>/delete", methods=["POST"])
+@auth.login_required
+def delete_comment(comment_id):
+    conn = db.get_db()
+    comment = conn.execute(
+        "SELECT * FROM comments WHERE id = ?", (comment_id,)
+    ).fetchone()
+    if comment is None:
+        abort(404)
+    if comment["user_id"] != g.user["id"]:
+        abort(403)
+    conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+    conn.commit()
+    return redirect(url_for("watch", video_id=comment["video_id"]) + "#comments")
 
 
 @app.route("/media/<video_id>")
@@ -309,6 +358,7 @@ def delete(video_id):
     if video["user_id"] != g.user["id"]:
         abort(403)
     storage.delete(video["stored_name"])
+    conn.execute("DELETE FROM comments WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
     conn.commit()
     flash("Video deleted.", "success")

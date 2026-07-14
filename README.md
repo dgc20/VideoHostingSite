@@ -12,6 +12,8 @@ to Azure App Service with videos stored in Azure Blob Storage.
 - Browse all videos in a grid, with search; anyone can watch
 - Watch pages with an HTML5 player, view counts, uploader credit, and a
   delete button shown only to the owner
+- **Comments** — logged-in users can comment on any video under their
+  username; you can delete your own comments
 - An account page listing your own uploads
 - Two storage backends, selected automatically:
   - **Local disk** (default) — with HTTP Range support so seeking works

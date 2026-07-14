@@ -22,6 +22,16 @@ CREATE TABLE IF NOT EXISTS videos (
     views       INTEGER NOT NULL DEFAULT 0,
     user_id     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS comments (
+    id         TEXT PRIMARY KEY,
+    video_id   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_comments_video ON comments(video_id);
 """
 
 

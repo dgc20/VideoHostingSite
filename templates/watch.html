@@ -18,5 +18,38 @@
         <button class="btn btn-danger" type="submit">Delete video</button>
       </form>
     {% endif %}
+
+    <section class="comments" id="comments">
+      <h2 class="section-title">{{ comments|length }} comment{{ '' if comments|length == 1 else 's' }}</h2>
+
+      {% if current_user %}
+        <form class="comment-form" method="post"
+              action="{{ url_for('add_comment', video_id=video['id']) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <textarea name="body" rows="3" maxlength="2000"
+                    placeholder="Add a comment as {{ current_user['username'] }}…" required></textarea>
+          <button class="btn btn-primary" type="submit">Comment</button>
+        </form>
+      {% else %}
+        <p class="hint"><a href="{{ url_for('login') }}">Log in</a> to leave a comment.</p>
+      {% endif %}
+
+      {% for c in comments %}
+        <div class="comment">
+          <div class="comment-head">
+            <span class="comment-author">{{ c['username'] }}</span>
+            <span class="comment-time">{{ c['created_at'] }} UTC</span>
+            {% if current_user and current_user['id'] == c['user_id'] %}
+              <form method="post" class="inline"
+                    action="{{ url_for('delete_comment', comment_id=c['id']) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="comment-delete" title="Delete comment">×</button>
+              </form>
+            {% endif %}
+          </div>
+          <p class="comment-body">{{ c['body'] }}</p>
+        </div>
+      {% endfor %}
+    </section>
   </div>
 {% endblock %}
