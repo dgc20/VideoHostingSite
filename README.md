@@ -65,7 +65,7 @@ To use a paid tier instead of Free:
 ```bash
 ./deploy/azure-setup.sh <app-name> <owner>/<repo> eastus B1   # ~$13/month
 ```
-
+test
 ## Configuration
 
 All optional, via environment variables (App Settings on Azure):
