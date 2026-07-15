@@ -22,7 +22,7 @@
            was lost. Please delete it and upload again.</p>
       </div>
     {% else %}
-      <video controls preload="metadata" src="{{ src }}"></video>
+      <video controls playsinline webkit-playsinline preload="metadata" src="{{ src }}"></video>
     {% endif %}
     <h1>{{ video['title'] }}</h1>
     <p class="meta">

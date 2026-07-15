@@ -11,24 +11,41 @@
 
 * { box-sizing: border-box; }
 
+html {
+  /* Keep text legible after rotating an iPhone, without Safari upscaling it */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
+  /* Never allow a stray wide element to cause sideways scrolling on a phone */
+  overflow-x: hidden;
 }
 
-a { color: inherit; text-decoration: none; }
+a {
+  color: inherit;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
 
 .site-header {
   display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1.5rem;
+  /* Respect the notch / rounded corners in landscape and standalone mode */
+  padding-left: max(1.5rem, env(safe-area-inset-left));
+  padding-right: max(1.5rem, env(safe-area-inset-right));
+  padding-top: max(0.75rem, env(safe-area-inset-top));
   background: var(--surface);
   border-bottom: 1px solid var(--surface-2);
   position: sticky;
   top: 0;
+  z-index: 10;
 }
 
 .brand { font-size: 1.2rem; font-weight: 700; color: var(--accent); white-space: nowrap; }
@@ -53,19 +70,27 @@ a { color: inherit; text-decoration: none; }
 }
 
 .btn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;            /* Apple's recommended minimum tap target */
   padding: 0.5rem 1.1rem;
   border: 0;
   border-radius: var(--radius);
   font-size: 0.95rem;
+  line-height: 1.1;
   cursor: pointer;
+  transition: background 0.12s ease, transform 0.06s ease;
 }
+.btn:active { transform: scale(0.97); }
 .btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent-hover); }
 .btn-danger { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-.btn-danger:hover { background: var(--accent); color: #fff; }
 .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--surface-2); }
-.btn-ghost:hover { background: var(--surface-2); }
+@media (hover: hover) {
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger:hover { background: var(--accent); color: #fff; }
+  .btn-ghost:hover { background: var(--surface-2); }
+}
 
 .user-nav { display: flex; align-items: center; gap: 0.6rem; white-space: nowrap; }
 .user-nav .who { color: var(--text); font-weight: 600; }
@@ -81,7 +106,14 @@ form.inline { display: inline; margin: 0; }
 .flash-success { background: #143d2b; color: #7ee2a8; }
 .flash-error { background: #46151a; color: #ff9ba0; }
 
-main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
+main {
+  max-width: 1100px;
+  margin: 1.5rem auto;
+  padding: 0 1.5rem;
+  padding-left: max(1.5rem, env(safe-area-inset-left));
+  padding-right: max(1.5rem, env(safe-area-inset-right));
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
 
 .grid {
   display: grid;
@@ -95,7 +127,8 @@ main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
   overflow: hidden;
   transition: transform 0.12s ease;
 }
-.card:hover { transform: translateY(-3px); }
+@media (hover: hover) { .card:hover { transform: translateY(-3px); } }
+.card:active { transform: scale(0.99); }
 .thumb {
   aspect-ratio: 16 / 9;
   display: flex;
@@ -118,6 +151,8 @@ main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
 .form-page label { display: block; margin-bottom: 1rem; color: var(--muted); font-size: 0.9rem; }
 .form-page input[type="text"],
 .form-page input[type="file"],
+.form-page input[type="email"],
+.form-page input[type="password"],
 .form-page textarea {
   display: block;
   width: 100%;
@@ -141,7 +176,7 @@ main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
 .watch-page .description { margin-top: 1rem; white-space: pre-wrap; }
 .watch-page > form { margin-top: 1.5rem; }
 
-.comments { margin-top: 2.5rem; border-top: 1px solid var(--surface-2); padding-top: 1.5rem; }
+.comments { margin-top: 2.5rem; border-top: 1px solid var(--surface-2); padding-top: 1.5rem; scroll-margin-top: 5rem; }
 .comment-form { margin-bottom: 1.75rem; }
 .comment-form textarea {
   display: block;
@@ -208,3 +243,52 @@ main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
   animation: spin 0.9s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ------------------------------------------------------------------ */
+/* Phones                                                             */
+/* ------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  /* Header reflows to two rows: brand + account controls, then a
+     full-width search box underneath. */
+  .site-header {
+    flex-wrap: wrap;
+    gap: 0.55rem 0.75rem;
+    padding: 0.6rem 1rem;
+    padding-top: max(0.6rem, env(safe-area-inset-top));
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+  .brand { order: 1; margin-right: auto; font-size: 1.05rem; }
+  .user-nav { order: 2; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
+  .user-nav .btn { padding: 0.5rem 0.75rem; font-size: 0.9rem; }
+  .user-nav .who { font-size: 0.9rem; }
+  .search { order: 3; flex-basis: 100%; max-width: none; margin: 0; }
+  .search button { min-height: 44px; }
+
+  main { margin: 1rem auto; }
+
+  /* Two videos per row on a phone instead of one big column */
+  .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.8rem; }
+  .card-body { padding: 0.6rem 0.7rem 0.85rem; }
+  .card-body h3 { font-size: 0.92rem; }
+
+  /* Forms go full-width; 16px inputs stop iOS from zooming on focus */
+  .form-page, .form-page.narrow { max-width: none; }
+  .form-page input,
+  .form-page textarea,
+  .search input,
+  .comment-form textarea { font-size: 16px; }
+
+  .watch-page h1 { font-size: 1.2rem; }
+  .watch-page video, .status-panel { max-height: 60vh; }
+
+  .flashes { padding: 0 1rem; }
+  .empty { padding: 3rem 1rem; }
+}
+
+/* Small phones (e.g. iPhone SE): one video per row */
+@media (max-width: 380px) {
+  .grid { grid-template-columns: 1fr; }
+  .brand { font-size: 1rem; }
+  .user-nav .btn { padding: 0.45rem 0.6rem; }
+}
