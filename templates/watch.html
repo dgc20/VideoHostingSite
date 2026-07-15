@@ -1,8 +1,29 @@
 {% extends "base.html" %}
 {% block title %}{{ video['title'] }} — BJJ Video Hosting{% endblock %}
+{% block head %}
+  {% if video['status'] == 'processing' %}
+    <meta http-equiv="refresh" content="15">
+  {% endif %}
+{% endblock %}
 {% block content %}
   <div class="watch-page">
-    <video controls preload="metadata" src="{{ src }}"></video>
+    {% if video['status'] == 'processing' %}
+      <div class="status-panel">
+        <div class="spinner"></div>
+        <h2>Compressing your video…</h2>
+        <p>Large uploads are compressed to stream smoothly. This page
+           refreshes automatically and the video will appear when it's
+           ready — you can safely leave and come back later.</p>
+      </div>
+    {% elif video['status'] == 'failed' %}
+      <div class="status-panel status-failed">
+        <h2>Processing failed</h2>
+        <p>Something went wrong while processing this video and its file
+           was lost. Please delete it and upload again.</p>
+      </div>
+    {% else %}
+      <video controls preload="metadata" src="{{ src }}"></video>
+    {% endif %}
     <h1>{{ video['title'] }}</h1>
     <p class="meta">
       {{ video['views'] }} view{{ '' if video['views'] == 1 else 's' }}

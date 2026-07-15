@@ -19,6 +19,8 @@
       </label>
       <button class="btn btn-primary" type="submit">Upload</button>
     </form>
-    <p class="hint">Supported formats: MP4, WebM, Ogg, MOV, M4V. Browsers play MP4 and WebM most reliably.</p>
+    <p class="hint">Supported formats: MP4, WebM, Ogg, MOV, M4V. Browsers play MP4 and WebM most reliably.
+       Videos over {{ (config['COMPRESS_THRESHOLD'] / 1048576) | int }} MB are compressed automatically
+       after upload (up to {{ (config['MAX_CONTENT_LENGTH'] / 1048576) | int }} MB accepted).</p>
   </div>
 {% endblock %}
