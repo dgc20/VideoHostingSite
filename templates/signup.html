@@ -10,15 +10,19 @@
         <input type="text" name="username" value="{{ username }}"
                pattern="[A-Za-z0-9_]{3,30}"
                title="3-30 characters: letters, numbers, or underscore"
-               autofocus required>
+               autocomplete="username" autocapitalize="none" autocorrect="off"
+               spellcheck="false" autofocus required>
       </label>
       <label>
         Email
-        <input type="email" name="email" value="{{ email }}" required>
+        <input type="email" name="email" value="{{ email }}"
+               autocomplete="email" inputmode="email" autocapitalize="none"
+               autocorrect="off" spellcheck="false" required>
       </label>
       <label>
         Password
-        <input type="password" name="password" minlength="8" required>
+        <input type="password" name="password" minlength="8"
+               autocomplete="new-password" required>
       </label>
       <button class="btn btn-primary" type="submit">Sign up</button>
     </form>
