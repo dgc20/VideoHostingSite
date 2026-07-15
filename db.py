@@ -21,8 +21,15 @@ CREATE TABLE IF NOT EXISTS videos (
     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
     views       INTEGER NOT NULL DEFAULT 0,
     user_id     TEXT,
-    status      TEXT NOT NULL DEFAULT 'ready'
+    status      TEXT NOT NULL DEFAULT 'ready',
+    -- Stable id from an external source (e.g. an iCloud asset), so the
+    -- import pipeline can re-run without creating duplicates. NULL for
+    -- videos uploaded through the website.
+    source_id   TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_source
+    ON videos(source_id) WHERE source_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS comments (
     id         TEXT PRIMARY KEY,
@@ -59,6 +66,12 @@ def _migrate(db):
         # Videos uploaded before compression existed are all ready.
         db.execute(
             "ALTER TABLE videos ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'"
+        )
+    if "source_id" not in columns:
+        db.execute("ALTER TABLE videos ADD COLUMN source_id TEXT")
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_source"
+            " ON videos(source_id) WHERE source_id IS NOT NULL"
         )
 
 

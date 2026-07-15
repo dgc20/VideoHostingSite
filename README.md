@@ -20,6 +20,11 @@ Storage.
   ffmpeg (H.264/AAC, capped at 1080p) and shows as "Processing…" until
   ready. ffmpeg ships with the app via `imageio-ffmpeg`, so this works on
   Azure App Service with no extra setup. Both limits are configurable.
+- **Bulk import from iCloud** — a local pipeline
+  ([`pipeline/`](pipeline/README.md)) uploads videos straight from your
+  iCloud library to blob storage and registers them via a token-auth
+  `POST /api/import` endpoint. Idempotent, so re-running only picks up new
+  videos.
 - An account page listing your own uploads
 - Two storage backends, selected automatically:
   - **Local disk** (default) — with HTTP Range support so seeking works
@@ -91,6 +96,7 @@ All optional, via environment variables (App Settings on Azure):
 | `SESSION_COOKIE_SECURE` | `0` | Set to `1` to send the session cookie only over HTTPS (the setup script sets this on Azure) |
 | `MAX_UPLOAD_MB` | `2048` | Maximum upload size |
 | `COMPRESS_THRESHOLD_MB` | `500` | Uploads larger than this are compressed in the background |
+| `IMPORT_API_TOKEN` | unset | Bearer token enabling `POST /api/import` for the iCloud pipeline; disabled when unset |
 | `DATA_DIR` | `/home/data` on Azure, `instance/` locally | Where SQLite, local uploads, and in-flight compression files live |
 
 ## Cost

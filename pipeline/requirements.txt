@@ -1,0 +1,9 @@
+# Dependencies for the local iCloud -> blob sync pipeline (sync_icloud.py).
+# Install these on the machine you run the pipeline from, NOT on the server:
+#   pip install -r pipeline/requirements.txt
+azure-storage-blob>=12.19
+requests>=2.31
+# Optional: only needed for --compress (transcoding before upload).
+imageio-ffmpeg>=0.5
+# Optional: only needed for --icloud (downloading straight from iCloud).
+icloudpd>=1.17

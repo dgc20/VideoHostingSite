@@ -78,8 +78,12 @@ def get_csrf_token():
 
 
 def check_csrf():
-    """before_request hook: reject POSTs without a valid CSRF token."""
-    if request.method == "POST":
+    """before_request hook: reject POSTs without a valid CSRF token.
+
+    /api/ endpoints are exempt: they authenticate with a bearer token, which
+    browsers never attach automatically, so they aren't CSRF-able.
+    """
+    if request.method == "POST" and not request.path.startswith("/api/"):
         expected = session.get("csrf_token")
         provided = request.form.get("csrf_token", "")
         if not expected or not secrets.compare_digest(expected, provided):

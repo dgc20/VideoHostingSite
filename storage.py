@@ -34,6 +34,9 @@ class LocalStorage:
     def path(self, stored_name):
         return os.path.join(self.upload_dir, stored_name)
 
+    def exists(self, stored_name):
+        return os.path.exists(self.path(stored_name))
+
     def delete(self, stored_name):
         try:
             os.remove(self.path(stored_name))
