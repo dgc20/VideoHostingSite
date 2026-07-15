@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS videos (
     size_bytes  INTEGER NOT NULL,
     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
     views       INTEGER NOT NULL DEFAULT 0,
-    user_id     TEXT
+    user_id     TEXT,
+    status      TEXT NOT NULL DEFAULT 'ready'
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -54,6 +55,11 @@ def _migrate(db):
     if "user_id" not in columns:
         # Videos uploaded before accounts existed keep user_id = NULL.
         db.execute("ALTER TABLE videos ADD COLUMN user_id TEXT")
+    if "status" not in columns:
+        # Videos uploaded before compression existed are all ready.
+        db.execute(
+            "ALTER TABLE videos ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'"
+        )
 
 
 def init_db(app):

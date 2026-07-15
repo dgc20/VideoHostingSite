@@ -15,6 +15,11 @@ Storage.
   delete button shown only to the owner
 - **Comments** — logged-in users can comment on any video under their
   username; you can delete your own comments
+- **Automatic compression of large uploads** — uploads up to 2 GB are
+  accepted; anything over 500 MB is transcoded in the background with
+  ffmpeg (H.264/AAC, capped at 1080p) and shows as "Processing…" until
+  ready. ffmpeg ships with the app via `imageio-ffmpeg`, so this works on
+  Azure App Service with no extra setup. Both limits are configurable.
 - An account page listing your own uploads
 - Two storage backends, selected automatically:
   - **Local disk** (default) — with HTTP Range support so seeking works
@@ -84,8 +89,9 @@ All optional, via environment variables (App Settings on Azure):
 | `AZURE_CONTAINER_NAME` | `videos` | Blob container name |
 | `SECRET_KEY` | dev value | Signs session cookies — **set a strong random value in production** (the setup script does this) |
 | `SESSION_COOKIE_SECURE` | `0` | Set to `1` to send the session cookie only over HTTPS (the setup script sets this on Azure) |
-| `MAX_UPLOAD_MB` | `512` | Maximum upload size |
-| `DATA_DIR` | `/home/data` on Azure, `instance/` locally | Where SQLite (and local uploads) live |
+| `MAX_UPLOAD_MB` | `2048` | Maximum upload size |
+| `COMPRESS_THRESHOLD_MB` | `500` | Uploads larger than this are compressed in the background |
+| `DATA_DIR` | `/home/data` on Azure, `instance/` locally | Where SQLite, local uploads, and in-flight compression files live |
 
 ## Cost
 
@@ -123,3 +129,8 @@ The setup is tuned for minimal spend:
 - SQLite is fine for a single App Service instance. If you scale out to
   multiple instances, move users and metadata to Azure Database for
   PostgreSQL, and switch sessions to a shared store.
+- Compression happens on the web app's own CPU. A 500 MB+ transcode takes
+  a while on the Free tier and eats into its 60 CPU-minutes/day quota — if
+  people upload large videos regularly, use `B1` or higher. Large uploads
+  also need temp disk space in `DATA_DIR` (Free tier has 1 GB; `B1` has
+  10 GB). Interrupted compressions resume automatically after a restart.

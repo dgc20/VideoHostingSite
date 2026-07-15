@@ -28,6 +28,7 @@ from werkzeug.utils import secure_filename
 
 import auth
 import db
+import processing
 import storage as storage_module
 
 ALLOWED_EXTENSIONS = {".mp4", ".webm", ".ogg", ".ogv", ".mov", ".m4v"}
@@ -39,7 +40,11 @@ _default_data_dir = "/home/data" if os.path.isdir("/home") and os.access("/home"
 app = Flask(__name__)
 app.config.update(
     SECRET_KEY=os.environ.get("SECRET_KEY", "dev-secret-change-me"),
-    MAX_CONTENT_LENGTH=int(os.environ.get("MAX_UPLOAD_MB", "512")) * 1024 * 1024,
+    MAX_CONTENT_LENGTH=int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024,
+    # Uploads larger than this are compressed in the background with ffmpeg.
+    COMPRESS_THRESHOLD=int(os.environ.get("COMPRESS_THRESHOLD_MB", "500"))
+    * 1024
+    * 1024,
     DATA_DIR=os.environ.get("DATA_DIR", _default_data_dir),
     AZURE_STORAGE_CONNECTION_STRING=os.environ.get("AZURE_STORAGE_CONNECTION_STRING"),
     AZURE_CONTAINER_NAME=os.environ.get("AZURE_CONTAINER_NAME", "videos"),
@@ -52,9 +57,17 @@ app.config.update(
 os.makedirs(app.config["DATA_DIR"], exist_ok=True)
 app.config["DATABASE"] = os.path.join(app.config["DATA_DIR"], "videos.db")
 app.config["UPLOAD_DIR"] = os.path.join(app.config["DATA_DIR"], "uploads")
+# Uploads land here first; large ones stay while compression runs.
+app.config["INCOMING_DIR"] = os.path.join(app.config["DATA_DIR"], "incoming")
+os.makedirs(app.config["INCOMING_DIR"], exist_ok=True)
 
 db.init_db(app)
 storage = storage_module.create_storage(app.config)
+
+# Restart any compressions that were interrupted by a redeploy/restart.
+processing.resume_pending(
+    app.config["DATABASE"], storage, app.config["INCOMING_DIR"]
+)
 
 # Load the logged-in user and enforce CSRF on every request.
 app.before_request(auth.load_logged_in_user)
@@ -201,20 +214,50 @@ def upload():
             mimetypes.guess_type(stored_name)[0] or "application/octet-stream"
         )
 
-        if storage.is_remote:
-            size = storage.save(file.stream, stored_name, content_type)
-        else:
-            size = storage.save(file.stream, stored_name)
+        # Land the upload on disk first so we can check its size before
+        # deciding whether it needs background compression.
+        raw_path = os.path.join(
+            app.config["INCOMING_DIR"], f"raw_{video_id}{ext}"
+        )
+        file.save(raw_path)
+        size = os.path.getsize(raw_path)
 
         conn = db.get_db()
-        conn.execute(
-            "INSERT INTO videos (id, title, description, stored_name,"
-            " content_type, size_bytes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (video_id, title, description, stored_name, content_type, size,
-             g.user["id"]),
-        )
-        conn.commit()
-        flash("Video uploaded.", "success")
+        if size <= app.config["COMPRESS_THRESHOLD"]:
+            try:
+                with open(raw_path, "rb") as f:
+                    if storage.is_remote:
+                        storage.save(f, stored_name, content_type)
+                    else:
+                        storage.save(f, stored_name)
+            finally:
+                os.remove(raw_path)
+            conn.execute(
+                "INSERT INTO videos (id, title, description, stored_name,"
+                " content_type, size_bytes, user_id, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready')",
+                (video_id, title, description, stored_name, content_type,
+                 size, g.user["id"]),
+            )
+            conn.commit()
+            flash("Video uploaded.", "success")
+        else:
+            conn.execute(
+                "INSERT INTO videos (id, title, description, stored_name,"
+                " content_type, size_bytes, user_id, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'processing')",
+                (video_id, title, description, stored_name, content_type,
+                 size, g.user["id"]),
+            )
+            conn.commit()
+            processing.process_async(
+                app.config["DATABASE"], storage, video_id, raw_path
+            )
+            flash(
+                "Video uploaded — it's being compressed and will be ready"
+                " to watch in a few minutes.",
+                "success",
+            )
         return redirect(url_for("watch", video_id=video_id))
 
     return render_template("upload.html")
@@ -230,13 +273,17 @@ def watch(video_id):
     ).fetchone()
     if video is None:
         abort(404)
-    conn.execute("UPDATE videos SET views = views + 1 WHERE id = ?", (video_id,))
-    conn.commit()
 
-    if storage.is_remote:
-        src = storage.playback_url(video["stored_name"])
-    else:
-        src = url_for("media", video_id=video_id)
+    src = None
+    if video["status"] == "ready":
+        conn.execute(
+            "UPDATE videos SET views = views + 1 WHERE id = ?", (video_id,)
+        )
+        conn.commit()
+        if storage.is_remote:
+            src = storage.playback_url(video["stored_name"])
+        else:
+            src = url_for("media", video_id=video_id)
     is_owner = g.user is not None and g.user["id"] == video["user_id"]
     comments = conn.execute(
         "SELECT c.id, c.body, c.created_at, c.user_id, u.username"
@@ -299,7 +346,7 @@ def media(video_id):
     video = conn.execute(
         "SELECT * FROM videos WHERE id = ?", (video_id,)
     ).fetchone()
-    if video is None:
+    if video is None or video["status"] != "ready":
         abort(404)
 
     path = storage.path(video["stored_name"])
@@ -358,6 +405,14 @@ def delete(video_id):
     if video["user_id"] != g.user["id"]:
         abort(403)
     storage.delete(video["stored_name"])
+    # If it's still compressing, drop the raw upload too; the worker notices
+    # the missing row when it finishes and discards its output.
+    for name in os.listdir(app.config["INCOMING_DIR"]):
+        if name.startswith(f"raw_{video_id}"):
+            try:
+                os.remove(os.path.join(app.config["INCOMING_DIR"], name))
+            except FileNotFoundError:
+                pass
     conn.execute("DELETE FROM comments WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
     conn.commit()

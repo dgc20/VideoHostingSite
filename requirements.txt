@@ -1,3 +1,6 @@
 Flask>=3.0
 gunicorn>=21.2
 azure-storage-blob>=12.19
+# Bundles a static ffmpeg binary, so video compression works on Azure App
+# Service (no apt-get available there).
+imageio-ffmpeg>=0.5

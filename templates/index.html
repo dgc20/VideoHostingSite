@@ -6,11 +6,17 @@
     <div class="grid">
       {% for v in videos %}
         <a class="card" href="{{ url_for('watch', video_id=v['id']) }}">
-          <div class="thumb">▶</div>
+          <div class="thumb">{% if v['status'] == 'processing' %}⏳{% else %}▶{% endif %}</div>
           <div class="card-body">
             <h3>{{ v['title'] }}</h3>
             <p class="meta">
-              {{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }}
+              {% if v['status'] == 'processing' %}
+                <span class="badge">Processing…</span>
+              {% elif v['status'] == 'failed' %}
+                <span class="badge badge-failed">Failed</span>
+              {% else %}
+                {{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }}
+              {% endif %}
               {% if v['uploader'] %}· {{ v['uploader'] }}{% endif %}
             </p>
           </div>
