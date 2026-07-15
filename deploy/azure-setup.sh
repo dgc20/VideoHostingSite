@@ -81,6 +81,9 @@ az webapp create \
   --runtime "PYTHON:3.12" \
   --output none
 
+# IMPORT_API_TOKEN enables the /api/import endpoint used by the iCloud sync
+# pipeline (pipeline/sync_icloud.py). Printed at the end so you can use it.
+IMPORT_API_TOKEN="$(openssl rand -hex 32)"
 echo "==> Configuring app settings"
 az webapp config appsettings set \
   --name "$APP_NAME" \
@@ -89,6 +92,7 @@ az webapp config appsettings set \
     AZURE_STORAGE_CONNECTION_STRING="$CONNECTION_STRING" \
     SECRET_KEY="$(openssl rand -hex 32)" \
     SESSION_COOKIE_SECURE=1 \
+    IMPORT_API_TOKEN="$IMPORT_API_TOKEN" \
     SCM_DO_BUILD_DURING_DEPLOYMENT=true \
   --output none
 
@@ -120,3 +124,6 @@ echo "  Site URL: https://${APP_NAME}.azurewebsites.net"
 echo "  Deploys:  push to 'main' on ${GITHUB_REPO} (watch the repo's Actions tab)."
 echo "  A workflow (main_${APP_NAME}.yml) was committed to your repo and the"
 echo "  first deploy has already been triggered."
+echo
+echo "  iCloud import token (IMPORT_API_TOKEN) for pipeline/sync_icloud.py:"
+echo "    ${IMPORT_API_TOKEN}"

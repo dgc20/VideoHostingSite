@@ -10,6 +10,8 @@ In production (Azure App Service):
 import mimetypes
 import os
 import re
+import secrets
+import sqlite3
 import uuid
 
 from flask import (
@@ -18,6 +20,7 @@ from flask import (
     abort,
     flash,
     g,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -53,6 +56,9 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "0") == "1",
+    # Bearer token for the /api/import endpoint used by the iCloud pipeline.
+    # When unset, the endpoint is disabled.
+    IMPORT_API_TOKEN=os.environ.get("IMPORT_API_TOKEN"),
 )
 os.makedirs(app.config["DATA_DIR"], exist_ok=True)
 app.config["DATABASE"] = os.path.join(app.config["DATA_DIR"], "videos.db")
@@ -155,6 +161,84 @@ def logout():
     auth.logout_user()
     flash("Signed out.", "success")
     return redirect(url_for("index"))
+
+
+@app.route("/api/import", methods=["POST"])
+def api_import():
+    """Register an already-uploaded blob as a video (used by the pipeline).
+
+    The pipeline uploads the file straight to blob storage, then POSTs the
+    metadata here. Authenticated with a bearer token; idempotent per
+    source_id so the pipeline can be re-run to pick up only new videos.
+    """
+    token = app.config.get("IMPORT_API_TOKEN")
+    if not token:
+        abort(404)  # feature disabled when no token is configured
+    header = request.headers.get("Authorization", "")
+    provided = header[7:] if header.startswith("Bearer ") else ""
+    if not provided or not secrets.compare_digest(provided, token):
+        abort(401)
+
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    stored_name = (data.get("stored_name") or "").strip()
+    source_id = (data.get("source_id") or "").strip()
+    title = (data.get("title") or "").strip()
+    description = (data.get("description") or "").strip()
+
+    if not username or not stored_name or not source_id:
+        return jsonify(error="username, stored_name and source_id are required"), 400
+    # stored_name must be a bare blob name — never a path.
+    if "/" in stored_name or "\\" in stored_name or ".." in stored_name:
+        return jsonify(error="invalid stored_name"), 400
+
+    conn = db.get_db()
+    user = conn.execute(
+        "SELECT id FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    if user is None:
+        return jsonify(error=f"unknown user '{username}'"), 400
+
+    existing = conn.execute(
+        "SELECT id FROM videos WHERE source_id = ?", (source_id,)
+    ).fetchone()
+    if existing:
+        return jsonify(id=existing["id"], status="exists"), 200
+
+    if not storage.exists(stored_name):
+        return jsonify(
+            error=f"no stored file named '{stored_name}' — upload it first"
+        ), 409
+
+    if not title:
+        title = os.path.splitext(stored_name)[0]
+    content_type = (
+        mimetypes.guess_type(stored_name)[0]
+        or data.get("content_type")
+        or "application/octet-stream"
+    )
+    try:
+        size = int(data.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        size = 0
+
+    video_id = uuid.uuid4().hex
+    try:
+        conn.execute(
+            "INSERT INTO videos (id, title, description, stored_name,"
+            " content_type, size_bytes, user_id, status, source_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)",
+            (video_id, title, description, stored_name, content_type, size,
+             user["id"], source_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # Concurrent import of the same source_id won the race.
+        row = conn.execute(
+            "SELECT id FROM videos WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        return jsonify(id=row["id"], status="exists"), 200
+    return jsonify(id=video_id, status="created"), 201
 
 
 @app.route("/account")
