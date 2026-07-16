@@ -28,9 +28,6 @@ CREATE TABLE IF NOT EXISTS videos (
     source_id   TEXT
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_source
-    ON videos(source_id) WHERE source_id IS NOT NULL;
-
 CREATE TABLE IF NOT EXISTS comments (
     id         TEXT PRIMARY KEY,
     video_id   TEXT NOT NULL,
@@ -57,7 +54,13 @@ def close_db(_exc=None):
 
 
 def _migrate(db):
-    """Bring an existing database up to the current schema."""
+    """Bring an existing database up to the current schema.
+
+    Columns are added first, then indexes are (re)created — never the other
+    way round. An index in SCHEMA would run inside executescript() *before*
+    these ALTERs, and on a pre-existing table (where CREATE TABLE IF NOT
+    EXISTS is a no-op) it would reference a column that doesn't exist yet.
+    """
     columns = {row[1] for row in db.execute("PRAGMA table_info(videos)")}
     if "user_id" not in columns:
         # Videos uploaded before accounts existed keep user_id = NULL.
@@ -69,10 +72,13 @@ def _migrate(db):
         )
     if "source_id" not in columns:
         db.execute("ALTER TABLE videos ADD COLUMN source_id TEXT")
-        db.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_source"
-            " ON videos(source_id) WHERE source_id IS NOT NULL"
-        )
+
+    # Created unconditionally (IF NOT EXISTS) so both fresh and migrated
+    # databases end up with the index, now that source_id is guaranteed.
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_source"
+        " ON videos(source_id) WHERE source_id IS NOT NULL"
+    )
 
 
 def init_db(app):
