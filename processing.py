@@ -56,6 +56,55 @@ def compress(ffmpeg, in_path, out_path):
     )
 
 
+def make_thumbnail(ffmpeg, src_path, out_path):
+    """Grab a single frame as a JPEG poster. Returns True on success.
+
+    Seeks ~1s in for a representative frame; retries from the start for very
+    short clips where 1s is past the end.
+    """
+    for seek in ("1", "0"):
+        try:
+            subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                 "-ss", seek, "-i", src_path, "-frames:v", "1",
+                 "-vf", "scale=640:-2", "-q:v", "3", out_path],
+                check=True, capture_output=True,
+            )
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                return True
+        except subprocess.CalledProcessError:
+            continue
+    return False
+
+
+def store_thumbnail(storage, video_id, video_path):
+    """Extract a poster from video_path and store it. Returns its stored name
+    (``<video_id>.jpg``) or None if ffmpeg is missing / extraction failed."""
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        return None
+    tmp = f"{video_path}.thumb.jpg"
+    try:
+        if not make_thumbnail(ffmpeg, video_path, tmp):
+            log.warning("could not extract thumbnail for %s", video_id)
+            return None
+        name = f"{video_id}.jpg"
+        with open(tmp, "rb") as f:
+            if storage.is_remote:
+                storage.save(f, name, "image/jpeg")
+            else:
+                storage.save(f, name)
+        return name
+    except Exception:
+        log.exception("thumbnail storage failed for %s", video_id)
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
+
+
 def process_async(database, storage, video_id, raw_path):
     """Compress raw_path and finalize the video row, on a daemon thread."""
     thread = threading.Thread(
@@ -102,19 +151,24 @@ def _process(database, storage, video_id, raw_path):
             else:
                 storage.save(f, stored_name)
 
+        thumbnail_name = store_thumbnail(storage, video_id, upload_path)
+
         conn = sqlite3.connect(database)
         try:
             row = conn.execute(
                 "SELECT 1 FROM videos WHERE id = ?", (video_id,)
             ).fetchone()
             if row is None:
-                # Deleted while processing; discard the stored file.
+                # Deleted while processing; discard the stored files.
                 storage.delete(stored_name)
+                if thumbnail_name:
+                    storage.delete(thumbnail_name)
                 return
             conn.execute(
                 "UPDATE videos SET stored_name = ?, content_type = ?,"
-                " size_bytes = ?, status = 'ready' WHERE id = ?",
-                (stored_name, content_type, size, video_id),
+                " size_bytes = ?, thumbnail_name = ?, status = 'ready'"
+                " WHERE id = ?",
+                (stored_name, content_type, size, thumbnail_name, video_id),
             )
             conn.commit()
         finally:

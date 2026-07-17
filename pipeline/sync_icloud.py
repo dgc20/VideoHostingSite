@@ -113,6 +113,28 @@ def compress_to_temp(src_path):
         return None
 
 
+def thumbnail_to_temp(src_path):
+    """Extract a poster JPEG. Returns the temp path, or None if unavailable."""
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        return None
+    out = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False).name
+    for seek in ("1", "0"):
+        try:
+            subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                 "-ss", seek, "-i", src_path, "-frames:v", "1",
+                 "-vf", "scale=640:-2", "-q:v", "3", out],
+                check=True, capture_output=True,
+            )
+            if os.path.getsize(out) > 0:
+                return out
+        except (subprocess.CalledProcessError, OSError):
+            continue
+    _quiet_remove(out)
+    return None
+
+
 def _find_ffmpeg():
     import shutil
 
@@ -204,6 +226,20 @@ def sync(source_dir, putter, registrar, manifest_path, username,
         content_type = mimetypes.guess_type(stored_name)[0] or "video/mp4"
         try:
             size = putter(upload_path, stored_name, content_type)
+
+            # Extract a poster and upload it alongside the video (best effort).
+            thumbnail_name = None
+            thumb = thumbnail_to_temp(upload_path)
+            if thumb:
+                thumbnail_name = stored_name.rsplit(".", 1)[0] + ".jpg"
+                try:
+                    putter(thumb, thumbnail_name, "image/jpeg")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("  thumbnail upload failed: %s", exc)
+                    thumbnail_name = None
+                finally:
+                    _quiet_remove(thumb)
+
             status, body = registrar({
                 "username": username,
                 "stored_name": stored_name,
@@ -211,6 +247,7 @@ def sync(source_dir, putter, registrar, manifest_path, username,
                 "title": title_from_filename(path),
                 "size_bytes": size,
                 "content_type": content_type,
+                "thumbnail_name": thumbnail_name,
             })
             if status in (200, 201):
                 manifest[sid] = {"stored_name": stored_name,

@@ -87,6 +87,11 @@ Useful flags:
 Non-web formats (e.g. `.avi`, `.mkv`) are transcoded to MP4 automatically so
 browsers can play them; `--compress` transcodes everything.
 
+A thumbnail (poster frame) is extracted and uploaded for each video when
+ffmpeg is available (it ships with `imageio-ffmpeg` in this folder's
+`requirements.txt`). Without ffmpeg, videos import fine but show the default
+placeholder.
+
 ## Getting iCloud videos onto disk
 
 - **macOS** — In Photos, select your videos → File → Export → *Export
