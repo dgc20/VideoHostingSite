@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT NOT NULL UNIQUE,
     email         TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    belt          TEXT NOT NULL DEFAULT 'white'
 );
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -54,7 +55,21 @@ def close_db(_exc=None):
 
 
 def _migrate(db):
-    """Bring an existing database up to the current schema.
+    """Bring an existing database up to the current schema."""
+    _migrate_users(db)
+    _migrate_videos(db)
+
+
+def _migrate_users(db):
+    columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+    if "belt" not in columns:
+        db.execute(
+            "ALTER TABLE users ADD COLUMN belt TEXT NOT NULL DEFAULT 'white'"
+        )
+
+
+def _migrate_videos(db):
+    """Bring the videos table up to the current schema.
 
     Columns are added first, then indexes are (re)created — never the other
     way round. An index in SCHEMA would run inside executescript() *before*

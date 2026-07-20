@@ -35,6 +35,8 @@ import processing
 import storage as storage_module
 
 ALLOWED_EXTENSIONS = {".mp4", ".webm", ".ogg", ".ogv", ".mov", ".m4v"}
+# BJJ adult belt progression, in order.
+BELTS = ("white", "blue", "purple", "brown", "black")
 
 # Azure App Service persists /home across restarts; use it when available so
 # the SQLite database and local uploads survive redeploys.
@@ -82,7 +84,11 @@ app.before_request(auth.check_csrf)
 
 @app.context_processor
 def inject_globals():
-    return {"current_user": g.get("user"), "csrf_token": auth.get_csrf_token}
+    return {
+        "current_user": g.get("user"),
+        "csrf_token": auth.get_csrf_token,
+        "BELTS": BELTS,
+    }
 
 
 def _allowed(filename):
@@ -251,13 +257,27 @@ def account():
     return render_template("account.html", videos=videos)
 
 
+@app.route("/account/belt", methods=["POST"])
+@auth.login_required
+def set_belt():
+    belt = request.form.get("belt", "").strip().lower()
+    if belt not in BELTS:
+        flash("Please pick a valid belt.", "error")
+        return redirect(url_for("account"))
+    conn = db.get_db()
+    conn.execute("UPDATE users SET belt = ? WHERE id = ?", (belt, g.user["id"]))
+    conn.commit()
+    flash(f"Belt updated to {belt}.", "success")
+    return redirect(url_for("account"))
+
+
 @app.route("/")
 def index():
     q = request.args.get("q", "").strip()
     conn = db.get_db()
     base = (
-        "SELECT v.*, u.username AS uploader FROM videos v"
-        " LEFT JOIN users u ON u.id = v.user_id"
+        "SELECT v.*, u.username AS uploader, u.belt AS uploader_belt"
+        " FROM videos v LEFT JOIN users u ON u.id = v.user_id"
     )
     if q:
         videos = conn.execute(
@@ -351,8 +371,8 @@ def upload():
 def watch(video_id):
     conn = db.get_db()
     video = conn.execute(
-        "SELECT v.*, u.username AS uploader FROM videos v"
-        " LEFT JOIN users u ON u.id = v.user_id WHERE v.id = ?",
+        "SELECT v.*, u.username AS uploader, u.belt AS uploader_belt"
+        " FROM videos v LEFT JOIN users u ON u.id = v.user_id WHERE v.id = ?",
         (video_id,),
     ).fetchone()
     if video is None:
@@ -370,7 +390,7 @@ def watch(video_id):
             src = url_for("media", video_id=video_id)
     is_owner = g.user is not None and g.user["id"] == video["user_id"]
     comments = conn.execute(
-        "SELECT c.id, c.body, c.created_at, c.user_id, u.username"
+        "SELECT c.id, c.body, c.created_at, c.user_id, u.username, u.belt"
         " FROM comments c JOIN users u ON u.id = c.user_id"
         " WHERE c.video_id = ? ORDER BY c.created_at DESC, c.rowid DESC",
         (video_id,),

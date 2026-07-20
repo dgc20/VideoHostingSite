@@ -25,7 +25,7 @@
     <nav class="user-nav">
       {% if current_user %}
         <a class="btn btn-primary" href="{{ url_for('upload') }}">Upload</a>
-        <a class="who" href="{{ url_for('account') }}">{{ current_user['username'] }}</a>
+        <a class="who" href="{{ url_for('account') }}">{% from "_macros.html" import belt %}{{ belt(current_user['belt']) }}{{ current_user['username'] }}</a>
         <form method="post" action="{{ url_for('logout') }}" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="btn btn-ghost">Log out</button>

@@ -1,9 +1,23 @@
 {% extends "base.html" %}
+{% from "_macros.html" import belt %}
 {% block title %}{{ current_user['username'] }} — BJJ Video Hosting{% endblock %}
 {% block content %}
   <div class="account-head">
-    <h1>{{ current_user['username'] }}</h1>
-    <p class="meta">{{ current_user['email'] }} · joined {{ current_user['created_at'] }} UTC</p>
+    <h1>{{ belt(current_user['belt']) }}{{ current_user['username'] }}</h1>
+    <p class="meta">
+      {{ current_user['belt']|capitalize }} belt ·
+      {{ current_user['email'] }} · joined {{ current_user['created_at'] }} UTC
+    </p>
+    <form class="belt-form" method="post" action="{{ url_for('set_belt') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="belt-select">Belt</label>
+      <select id="belt-select" name="belt">
+        {% for b in BELTS %}
+          <option value="{{ b }}" {{ 'selected' if b == current_user['belt'] }}>{{ b|capitalize }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-ghost" type="submit">Save</button>
+    </form>
   </div>
 
   <h2 class="section-title">Your videos ({{ videos|length }})</h2>
