@@ -97,6 +97,47 @@ a {
 .user-nav .who:hover { color: var(--accent); }
 form.inline { display: inline; margin: 0; }
 
+/* BJJ belt icon: a colored bar with a darker "knot" wrap near one end. */
+.belt {
+  display: inline-block;
+  width: 1.6em;
+  height: 0.5em;
+  border-radius: 2px;
+  position: relative;
+  vertical-align: middle;
+  margin-right: 0.35em;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+.belt::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: 58%;
+  width: 0.34em;
+  border-radius: 1px;
+  background: rgba(0, 0, 0, 0.5);
+}
+.belt-white  { background: #e9e9ea; }
+.belt-white::after { background: rgba(0, 0, 0, 0.35); }
+.belt-blue   { background: #2f6fed; }
+.belt-purple { background: #8b46d6; }
+.belt-brown  { background: #6b4226; }
+.belt-black  { background: #101012; }
+.belt-black::after { background: #e5484d; }  /* black belts carry a red bar */
+h1 .belt { width: 2.2em; height: 0.7em; margin-right: 0.5em; }
+
+.belt-form { display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem; }
+.belt-form label { color: var(--muted); font-size: 0.9rem; }
+.belt-form select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
 .account-head { border-bottom: 1px solid var(--surface-2); padding-bottom: 1rem; margin-bottom: 1.5rem; }
 .account-head h1 { margin: 0 0 0.25rem; }
 .section-title { font-size: 1.1rem; margin: 0 0 1rem; }

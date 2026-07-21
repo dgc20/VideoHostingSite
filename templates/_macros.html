@@ -1,0 +1,6 @@
+{# A small BJJ belt icon. `color` is one of white/blue/purple/brown/black. #}
+{% macro belt(color) %}
+  {%- set c = (color or 'white')|lower -%}
+  <span class="belt belt-{{ c }}" role="img"
+        title="{{ c|capitalize }} belt" aria-label="{{ c|capitalize }} belt"></span>
+{%- endmacro %}

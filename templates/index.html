@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import belt %}
 {% block title %}BJJ Video Hosting — Browse{% endblock %}
 {% block content %}
   {% if q %}<p class="results-note">Results for “{{ q }}” ({{ videos|length }})</p>{% endif %}
@@ -21,7 +22,7 @@
               {% else %}
                 {{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }}
               {% endif %}
-              {% if v['uploader'] %}· {{ v['uploader'] }}{% endif %}
+              {% if v['uploader'] %}· {{ belt(v['uploader_belt']) }}{{ v['uploader'] }}{% endif %}
             </p>
           </div>
         </a>

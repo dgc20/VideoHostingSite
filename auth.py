@@ -47,7 +47,7 @@ def load_logged_in_user():
         g.user = None
         return
     g.user = db.get_db().execute(
-        "SELECT id, username, email, created_at FROM users WHERE id = ?",
+        "SELECT id, username, email, created_at, belt FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
     if g.user is None:

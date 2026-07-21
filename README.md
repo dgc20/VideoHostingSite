@@ -7,7 +7,9 @@ Storage.
 ## Features
 
 - **Accounts** — sign up, log in, and log out (session-based auth with
-  hashed passwords and CSRF-protected forms)
+  hashed passwords and CSRF-protected forms); each profile has a **BJJ belt**
+  (white → blue → purple → brown → black) shown as a small icon next to the
+  user's name on their profile, comments, and video credits
 - Upload videos (MP4, WebM, Ogg, MOV, M4V) with a title and description —
   requires an account; each video is owned by its uploader
 - Browse all videos in a grid, with search; anyone can watch
