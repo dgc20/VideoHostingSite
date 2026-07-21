@@ -11,6 +11,9 @@ Storage.
 - Upload videos (MP4, WebM, Ogg, MOV, M4V) with a title and description —
   requires an account; each video is owned by its uploader
 - Browse all videos in a grid, with search; anyone can watch
+- **Thumbnails** — a poster frame is extracted from each video with ffmpeg
+  on upload (and by the import pipeline) and shown on the grid and as the
+  player's poster
 - Watch pages with an HTML5 player, view counts, uploader credit, and a
   delete button shown only to the owner
 - **Comments** — logged-in users can comment on any video under their

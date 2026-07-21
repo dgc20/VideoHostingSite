@@ -185,12 +185,14 @@ def api_import():
     source_id = (data.get("source_id") or "").strip()
     title = (data.get("title") or "").strip()
     description = (data.get("description") or "").strip()
+    thumbnail_name = (data.get("thumbnail_name") or "").strip() or None
 
     if not username or not stored_name or not source_id:
         return jsonify(error="username, stored_name and source_id are required"), 400
-    # stored_name must be a bare blob name — never a path.
-    if "/" in stored_name or "\\" in stored_name or ".." in stored_name:
-        return jsonify(error="invalid stored_name"), 400
+    # Stored names must be bare blob names — never paths.
+    for value in (stored_name, thumbnail_name):
+        if value and ("/" in value or "\\" in value or ".." in value):
+            return jsonify(error="invalid stored_name"), 400
 
     conn = db.get_db()
     user = conn.execute(
@@ -226,10 +228,10 @@ def api_import():
     try:
         conn.execute(
             "INSERT INTO videos (id, title, description, stored_name,"
-            " content_type, size_bytes, user_id, status, source_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)",
+            " content_type, size_bytes, user_id, status, source_id,"
+            " thumbnail_name) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)",
             (video_id, title, description, stored_name, content_type, size,
-             user["id"], source_id),
+             user["id"], source_id, thumbnail_name),
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -314,14 +316,18 @@ def upload():
                         storage.save(f, stored_name, content_type)
                     else:
                         storage.save(f, stored_name)
+                # Extract a poster frame while we still have the local file.
+                thumbnail_name = processing.store_thumbnail(
+                    storage, video_id, raw_path
+                )
             finally:
                 os.remove(raw_path)
             conn.execute(
                 "INSERT INTO videos (id, title, description, stored_name,"
-                " content_type, size_bytes, user_id, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready')",
+                " content_type, size_bytes, user_id, status, thumbnail_name)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)",
                 (video_id, title, description, stored_name, content_type,
-                 size, g.user["id"]),
+                 size, g.user["id"], thumbnail_name),
             )
             conn.commit()
             flash("Video uploaded.", "success")
@@ -369,6 +375,7 @@ def watch(video_id):
         else:
             src = url_for("media", video_id=video_id)
     is_owner = g.user is not None and g.user["id"] == video["user_id"]
+    poster = url_for("thumb", video_id=video_id) if video["thumbnail_name"] else None
     comments = conn.execute(
         "SELECT c.id, c.body, c.created_at, c.user_id, u.username"
         " FROM comments c JOIN users u ON u.id = c.user_id"
@@ -376,8 +383,26 @@ def watch(video_id):
         (video_id,),
     ).fetchall()
     return render_template(
-        "watch.html", video=video, src=src, is_owner=is_owner, comments=comments
+        "watch.html", video=video, src=src, poster=poster,
+        is_owner=is_owner, comments=comments
     )
+
+
+@app.route("/thumb/<video_id>")
+def thumb(video_id):
+    """Serve a video's poster image (local file) or redirect to its SAS URL."""
+    row = db.get_db().execute(
+        "SELECT thumbnail_name FROM videos WHERE id = ?", (video_id,)
+    ).fetchone()
+    if row is None or not row["thumbnail_name"]:
+        abort(404)
+    name = row["thumbnail_name"]
+    if storage.is_remote:
+        return redirect(storage.playback_url(name))
+    path = storage.path(name)
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="image/jpeg", conditional=True)
 
 
 @app.route("/watch/<video_id>/comment", methods=["POST"])
@@ -489,6 +514,8 @@ def delete(video_id):
     if video["user_id"] != g.user["id"]:
         abort(403)
     storage.delete(video["stored_name"])
+    if video["thumbnail_name"]:
+        storage.delete(video["thumbnail_name"])
     # If it's still compressing, drop the raw upload too; the worker notices
     # the missing row when it finishes and discards its output.
     for name in os.listdir(app.config["INCOMING_DIR"]):

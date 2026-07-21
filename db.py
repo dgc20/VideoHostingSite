@@ -25,7 +25,10 @@ CREATE TABLE IF NOT EXISTS videos (
     -- Stable id from an external source (e.g. an iCloud asset), so the
     -- import pipeline can re-run without creating duplicates. NULL for
     -- videos uploaded through the website.
-    source_id   TEXT
+    source_id   TEXT,
+    -- Stored name of the poster image extracted from the video. NULL for
+    -- older videos and any whose frame couldn't be extracted.
+    thumbnail_name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -72,6 +75,8 @@ def _migrate(db):
         )
     if "source_id" not in columns:
         db.execute("ALTER TABLE videos ADD COLUMN source_id TEXT")
+    if "thumbnail_name" not in columns:
+        db.execute("ALTER TABLE videos ADD COLUMN thumbnail_name TEXT")
 
     # Created unconditionally (IF NOT EXISTS) so both fresh and migrated
     # databases end up with the index, now that source_id is guaranteed.
