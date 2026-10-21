@@ -19,6 +19,8 @@
                 <span class="badge">Processing…</span>
               {% elif v['status'] == 'failed' %}
                 <span class="badge badge-failed">Failed</span>
+              {% elif v['status'] == 'duplicate' %}
+                <span class="badge">Duplicate</span>
               {% else %}
                 {{ v['views'] }} view{{ '' if v['views'] == 1 else 's' }}
               {% endif %}

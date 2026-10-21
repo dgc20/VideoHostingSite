@@ -201,6 +201,7 @@ main {
 .form-page input[type="file"],
 .form-page input[type="email"],
 .form-page input[type="password"],
+.form-page input[type="date"],
 .form-page textarea {
   display: block;
   width: 100%;
@@ -340,3 +341,47 @@ main {
   .brand { font-size: 1rem; }
   .user-nav .btn { padding: 0.45rem 0.6rem; }
 }
+
+/* Match metadata (upload form + watch page) */
+.meta-fields { border: 1px solid var(--surface-2); border-radius: var(--radius); padding: 0.75rem 1rem 0.25rem; margin: 0 0 1rem; }
+.meta-fields legend { color: var(--text); font-weight: 600; padding: 0 0.4rem; }
+.required { color: var(--accent); font-size: 0.8rem; }
+.match-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 1rem 0 0; font-size: 0.9rem; }
+.match-meta dt { color: var(--muted); }
+.match-meta dd { margin: 0; word-break: break-word; }
+.upload-progress { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.upload-progress[hidden] { display: none; }
+.upload-progress progress { width: 100%; accent-color: var(--accent); }
+.upload-progress-label { color: var(--muted); font-size: 0.85rem; }
+
+/* Job dashboard (OPS-1) */
+.jobs-page h1 { margin: 0 0 0.4rem; }
+.jobs-page > .meta { margin-bottom: 1.25rem; max-width: 46rem; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 1.25rem; }
+.jobs-totals, .jobs-table { border-collapse: collapse; font-size: 0.88rem; width: 100%; }
+.jobs-totals { width: auto; }
+.jobs-totals th, .jobs-totals td, .jobs-table th, .jobs-table td {
+  padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--surface-2); text-align: left; vertical-align: top;
+}
+.jobs-totals td { text-align: right; font-variant-numeric: tabular-nums; }
+.jobs-table thead th, .jobs-totals thead th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.num-zero { color: var(--muted); opacity: 0.6; }
+.num-failed { color: #ff9ba0; font-weight: 600; }
+.num-running, .num-queued { color: #f5c76b; }
+.job-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
+.chip-link { padding: 0.3rem 0.8rem; border-radius: 999px; border: 1px solid var(--surface-2); color: var(--text); font-size: 0.85rem; }
+.chip-link.active { background: var(--surface-2); }
+.job-chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.78rem; background: var(--surface-2); color: var(--muted); }
+.job-succeeded { background: #143d2b; color: #7ee2a8; }
+.job-running, .job-queued { background: #3d3214; color: #f5c76b; }
+.job-failed { background: #46151a; color: #ff9ba0; }
+.job-skipped { background: var(--surface); color: var(--muted); }
+.job-state { font-weight: 600; }
+.job-state-failed { color: #ff9ba0; }
+.attempts { display: block; color: var(--muted); font-size: 0.75rem; margin-top: 0.2rem; }
+.job-error { color: #ff9ba0; font-size: 0.75rem; margin-top: 0.25rem; max-width: 18rem; word-break: break-word; }
+.btn-small { padding: 0.3rem 0.7rem; font-size: 0.8rem; }
+.pager { display: flex; gap: 1rem; }
+.jobs-table td:first-child { min-width: 11rem; }
+.jobs-table td { min-width: 6.5rem; }
+.job-error { min-width: 10rem; }

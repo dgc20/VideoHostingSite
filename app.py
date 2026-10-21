@@ -7,10 +7,11 @@ Run locally:
 In production (Azure App Service):
     gunicorn --bind=0.0.0.0:8000 --timeout 600 app:app
 """
-import mimetypes
+import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import uuid
 
@@ -31,10 +32,13 @@ from werkzeug.utils import secure_filename
 
 import auth
 import db
+import ingest
+import jobs
 import processing
+import stages
 import storage as storage_module
 
-ALLOWED_EXTENSIONS = {".mp4", ".webm", ".ogg", ".ogv", ".mov", ".m4v"}
+ALLOWED_EXTENSIONS = ingest.ALLOWED_EXTENSIONS
 # BJJ adult belt progression, in order.
 BELTS = ("white", "blue", "purple", "brown", "black")
 
@@ -61,6 +65,23 @@ app.config.update(
     # Bearer token for the /api/import endpoint used by the iCloud pipeline.
     # When unset, the endpoint is disabled.
     IMPORT_API_TOKEN=os.environ.get("IMPORT_API_TOKEN"),
+    # --- Analysis pipeline (Phase 0) ---
+    # Run the background job worker in this process ("0" disables it, e.g.
+    # when jobs are drained with `flask run-jobs` instead).
+    JOB_WORKER=os.environ.get("JOB_WORKER", "1") == "1",
+    JOB_MAX_ATTEMPTS=int(os.environ.get("JOB_MAX_ATTEMPTS", "3")),
+    JOB_LEASE_SECONDS=int(os.environ.get("JOB_LEASE_SECONDS", "120")),
+    KEYFRAME_INTERVAL_S=float(os.environ.get("KEYFRAME_INTERVAL_S", "10")),
+    KEYFRAME_SCENE_THRESHOLD=float(os.environ.get("KEYFRAME_SCENE_THRESHOLD", "0.4")),
+    # Resumable uploads (ING-1): total size cap and per-request chunk cap.
+    MAX_RESUMABLE_UPLOAD_BYTES=int(float(os.environ.get("MAX_RESUMABLE_UPLOAD_GB", "20"))
+                                   * 1024 * 1024 * 1024),
+    UPLOAD_CHUNK_BYTES=int(os.environ.get("UPLOAD_CHUNK_MB", "8")) * 1024 * 1024,
+    UPLOAD_SESSION_TTL_HOURS=int(os.environ.get("UPLOAD_SESSION_TTL_HOURS", "48")),
+    # Comma-separated usernames who see every job on the dashboard.
+    ADMIN_USERNAMES={
+        u.strip() for u in os.environ.get("ADMIN_USERNAMES", "").split(",") if u.strip()
+    },
 )
 os.makedirs(app.config["DATA_DIR"], exist_ok=True)
 app.config["DATABASE"] = os.path.join(app.config["DATA_DIR"], "videos.db")
@@ -72,10 +93,35 @@ os.makedirs(app.config["INCOMING_DIR"], exist_ok=True)
 db.init_db(app)
 storage = storage_module.create_storage(app.config)
 
-# Restart any compressions that were interrupted by a redeploy/restart.
+# Restart any legacy compressions that were interrupted by a redeploy/restart
+# (videos uploaded before the job pipeline existed).
 processing.resume_pending(
     app.config["DATABASE"], storage, app.config["INCOMING_DIR"]
 )
+
+pipeline = jobs.PipelineContext(
+    database=app.config["DATABASE"],
+    storage=storage,
+    work_root=os.path.join(app.config["INCOMING_DIR"], "work"),
+    compress_threshold=app.config["COMPRESS_THRESHOLD"],
+    keyframe_interval_s=app.config["KEYFRAME_INTERVAL_S"],
+    keyframe_scene_threshold=app.config["KEYFRAME_SCENE_THRESHOLD"],
+    max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+    lease_s=app.config["JOB_LEASE_SECONDS"],
+)
+
+
+@app.before_request
+def _ensure_worker():
+    """Start the background job worker with the first web request.
+
+    Started lazily rather than at import so CLI commands (`flask
+    import-folder`, `flask run-jobs`) don't spawn a worker that dies with the
+    command mid-job. Jobs left queued or running by a previous process are
+    picked up here (running ones once their lease expires).
+    """
+    if app.config["JOB_WORKER"]:
+        jobs.start_worker(pipeline)
 
 # Load the logged-in user and enforce CSRF on every request.
 app.before_request(auth.load_logged_in_user)
@@ -88,6 +134,7 @@ def inject_globals():
         "current_user": g.get("user"),
         "csrf_token": auth.get_csrf_token,
         "BELTS": BELTS,
+        "license_suggestions": ingest.LICENSE_SUGGESTIONS,
     }
 
 
@@ -189,8 +236,6 @@ def api_import():
     username = (data.get("username") or "").strip()
     stored_name = (data.get("stored_name") or "").strip()
     source_id = (data.get("source_id") or "").strip()
-    title = (data.get("title") or "").strip()
-    description = (data.get("description") or "").strip()
     thumbnail_name = (data.get("thumbnail_name") or "").strip() or None
 
     if not username or not stored_name or not source_id:
@@ -199,6 +244,10 @@ def api_import():
     for value in (stored_name, thumbnail_name):
         if value and ("/" in value or "\\" in value or ".." in value):
             return jsonify(error="invalid stored_name"), 400
+    try:
+        meta = ingest.validate_metadata(data, stored_name)
+    except ingest.MetadataError as exc:
+        return jsonify(error=str(exc)), 400
 
     conn = db.get_db()
     user = conn.execute(
@@ -218,34 +267,35 @@ def api_import():
             error=f"no stored file named '{stored_name}' — upload it first"
         ), 409
 
-    if not title:
-        title = os.path.splitext(stored_name)[0]
-    content_type = (
-        mimetypes.guess_type(stored_name)[0]
-        or data.get("content_type")
-        or "application/octet-stream"
-    )
     try:
         size = int(data.get("size_bytes") or 0)
     except (TypeError, ValueError):
         size = 0
 
-    video_id = uuid.uuid4().hex
     try:
-        conn.execute(
-            "INSERT INTO videos (id, title, description, stored_name,"
-            " content_type, size_bytes, user_id, status, source_id,"
-            " thumbnail_name) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)",
-            (video_id, title, description, stored_name, content_type, size,
-             user["id"], source_id, thumbnail_name),
+        # The uploaded blob is adopted in place as the video's original and
+        # goes through the same pipeline as any upload.
+        video_id = ingest.create_video(
+            conn, user_id=user["id"], meta=meta, filename=stored_name,
+            size_bytes=size, ingest_input={"source_key": stored_name},
+            source_id=source_id, max_attempts=app.config["JOB_MAX_ATTEMPTS"],
         )
+        if thumbnail_name and storage.exists(thumbnail_name):
+            # Show the pipeline's poster until our own keyframes are ready;
+            # tracked as an asset so deleting the video removes it.
+            conn.execute("UPDATE videos SET thumbnail_name = ? WHERE id = ?",
+                         (thumbnail_name, video_id))
+            stages.record_asset(conn, video_id, "thumbnail", thumbnail_name,
+                                pipeline_version="icloud-pipeline")
         conn.commit()
     except sqlite3.IntegrityError:
         # Concurrent import of the same source_id won the race.
+        conn.rollback()
         row = conn.execute(
             "SELECT id FROM videos WHERE source_id = ?", (source_id,)
         ).fetchone()
         return jsonify(id=row["id"], status="exists"), 200
+    jobs.notify()
     return jsonify(id=video_id, status="created"), 201
 
 
@@ -281,15 +331,26 @@ def index():
         "SELECT v.*, u.username AS uploader, u.belt AS uploader_belt"
         " FROM videos v LEFT JOIN users u ON u.id = v.user_id"
     )
+    # Exact duplicates are kept for the record but not listed.
+    base += " WHERE v.status != 'duplicate'"
     if q:
         videos = conn.execute(
-            base + " WHERE v.title LIKE ? OR v.description LIKE ?"
+            base + " AND (v.title LIKE ? OR v.description LIKE ?"
+            " OR v.competition LIKE ? OR v.id IN (SELECT video_id FROM"
+            " video_participants WHERE name LIKE ? OR team LIKE ?))"
             " ORDER BY v.uploaded_at DESC",
-            (f"%{q}%", f"%{q}%"),
+            (f"%{q}%",) * 5,
         ).fetchall()
     else:
         videos = conn.execute(base + " ORDER BY v.uploaded_at DESC").fetchall()
     return render_template("index.html", videos=videos, q=q)
+
+
+def _upload_form_data():
+    return {key: request.form.get(key, "") for key in (
+        "title", "description", "competition", "event_date", "participants",
+        "source", "license",
+    )}
 
 
 @app.route("/upload", methods=["GET", "POST"])
@@ -297,80 +358,198 @@ def index():
 def upload():
     if request.method == "POST":
         file = request.files.get("video")
-        title = request.form.get("title", "").strip()
-        description = request.form.get("description", "").strip()
+        form = _upload_form_data()
 
         if not file or not file.filename:
             flash("Please choose a video file.", "error")
-            return redirect(url_for("upload"))
+            return render_template("upload.html", form=form), 400
         if not _allowed(file.filename):
             flash(
                 "Unsupported file type. Allowed: "
                 + ", ".join(sorted(ALLOWED_EXTENSIONS)),
                 "error",
             )
-            return redirect(url_for("upload"))
-        if not title:
-            title = os.path.splitext(secure_filename(file.filename))[0] or "Untitled"
+            return render_template("upload.html", form=form), 400
+        try:
+            meta = ingest.validate_metadata(
+                form, secure_filename(file.filename) or "video"
+            )
+        except ingest.MetadataError as exc:
+            flash(str(exc).capitalize() + ".", "error")
+            return render_template("upload.html", form=form), 400
 
+        # Land the upload on disk; the ingest job hashes it and moves it
+        # into storage, then the rest of the pipeline runs in the background.
         ext = os.path.splitext(file.filename)[1].lower()
-        video_id = uuid.uuid4().hex
-        stored_name = f"{video_id}{ext}"
-        content_type = (
-            mimetypes.guess_type(stored_name)[0] or "application/octet-stream"
-        )
-
-        # Land the upload on disk first so we can check its size before
-        # deciding whether it needs background compression.
         raw_path = os.path.join(
-            app.config["INCOMING_DIR"], f"raw_{video_id}{ext}"
+            app.config["INCOMING_DIR"], f"upload_{uuid.uuid4().hex}{ext}"
         )
         file.save(raw_path)
-        size = os.path.getsize(raw_path)
-
         conn = db.get_db()
-        if size <= app.config["COMPRESS_THRESHOLD"]:
-            try:
-                with open(raw_path, "rb") as f:
-                    if storage.is_remote:
-                        storage.save(f, stored_name, content_type)
-                    else:
-                        storage.save(f, stored_name)
-                # Extract a poster frame while we still have the local file.
-                thumbnail_name = processing.store_thumbnail(
-                    storage, video_id, raw_path
-                )
-            finally:
-                os.remove(raw_path)
-            conn.execute(
-                "INSERT INTO videos (id, title, description, stored_name,"
-                " content_type, size_bytes, user_id, status, thumbnail_name)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)",
-                (video_id, title, description, stored_name, content_type,
-                 size, g.user["id"], thumbnail_name),
-            )
-            conn.commit()
-            flash("Video uploaded.", "success")
-        else:
-            conn.execute(
-                "INSERT INTO videos (id, title, description, stored_name,"
-                " content_type, size_bytes, user_id, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'processing')",
-                (video_id, title, description, stored_name, content_type,
-                 size, g.user["id"]),
-            )
-            conn.commit()
-            processing.process_async(
-                app.config["DATABASE"], storage, video_id, raw_path
-            )
-            flash(
-                "Video uploaded — it's being compressed and will be ready"
-                " to watch in a few minutes.",
-                "success",
-            )
+        video_id = ingest.create_video(
+            conn,
+            user_id=g.user["id"],
+            meta=meta,
+            filename=file.filename,
+            size_bytes=os.path.getsize(raw_path),
+            ingest_input={"staged_path": raw_path, "delete_staged": True,
+                          "filename": file.filename},
+            max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+        conn.commit()
+        jobs.notify()
+        flash(
+            "Video uploaded — it's being processed and will be ready to"
+            " watch shortly.",
+            "success",
+        )
         return redirect(url_for("watch", video_id=video_id))
 
-    return render_template("upload.html")
+    return render_template("upload.html", form={"license": "own-footage"})
+
+
+# --- Resumable uploads (ING-1); protocol described in ingest.py -------------
+
+def _json_login_required(view):
+    import functools
+
+    @functools.wraps(view)
+    def wrapped(*args, **kwargs):
+        if g.user is None:
+            return jsonify(error="login required"), 401
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _upload_error(exc):
+    return jsonify(error=str(exc), **exc.extra), exc.status
+
+
+def _upload_payload(session_row):
+    body = ingest.upload_status(session_row)
+    body["upload_url"] = url_for("resumable_upload", upload_id=session_row["id"])
+    if session_row["video_id"]:
+        body["watch_url"] = url_for("watch", video_id=session_row["video_id"])
+    return body
+
+
+@app.route("/uploads", methods=["POST"])
+@_json_login_required
+def create_resumable_upload():
+    conn = db.get_db()
+    ingest.expire_upload_sessions(
+        conn, app.config["INCOMING_DIR"], app.config["UPLOAD_SESSION_TTL_HOURS"]
+    )
+    try:
+        upload_id = ingest.create_upload_session(
+            conn,
+            user_id=g.user["id"],
+            data=request.get_json(silent=True) or {},
+            max_bytes=app.config["MAX_RESUMABLE_UPLOAD_BYTES"],
+            incoming_dir=app.config["INCOMING_DIR"],
+            free_bytes=shutil.disk_usage(app.config["INCOMING_DIR"]).free,
+        )
+    except ingest.UploadError as exc:
+        return _upload_error(exc)
+    conn.commit()
+    session_row = ingest.get_upload_session(conn, upload_id, g.user["id"])
+    body = _upload_payload(session_row)
+    body["chunk_size"] = app.config["UPLOAD_CHUNK_BYTES"]
+    return jsonify(body), 201
+
+
+@app.route("/uploads/<upload_id>", methods=["GET", "PUT", "DELETE"])
+@_json_login_required
+def resumable_upload(upload_id):
+    conn = db.get_db()
+    try:
+        session_row = ingest.get_upload_session(conn, upload_id, g.user["id"])
+        if request.method == "GET":
+            return jsonify(_upload_payload(session_row))
+        if request.method == "DELETE":
+            ingest.abort_upload(conn, session_row, app.config["INCOMING_DIR"])
+            conn.commit()
+            return jsonify(_upload_payload(
+                ingest.get_upload_session(conn, upload_id, g.user["id"])))
+        session_row = ingest.write_chunk(
+            conn, session_row, request.headers.get("Content-Range"),
+            request.stream,
+            max_chunk=app.config["UPLOAD_CHUNK_BYTES"],
+            incoming_dir=app.config["INCOMING_DIR"],
+            max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+    except ingest.UploadError as exc:
+        return _upload_error(exc)
+    if session_row["status"] == "complete":
+        jobs.notify()
+        return jsonify(_upload_payload(session_row)), 201
+    return jsonify(_upload_payload(session_row))
+
+
+# --- Job dashboard (OPS-1) ---------------------------------------------------
+
+def _is_admin():
+    return g.user is not None and g.user["username"] in app.config["ADMIN_USERNAMES"]
+
+
+@app.route("/jobs")
+@auth.login_required
+def jobs_dashboard():
+    state = request.args.get("state", "all")
+    if state not in jobs.DASHBOARD_FILTERS:
+        state = "all"
+    video_id = request.args.get("video") or None
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    per_page = 50
+    admin = _is_admin()
+    videos, totals = jobs.dashboard(
+        db.get_db(),
+        user_id=None if admin else g.user["id"],
+        state=state, video_id=video_id,
+        limit=per_page + 1, offset=(page - 1) * per_page,
+    )
+    has_next = len(videos) > per_page
+    videos = videos[:per_page]
+    if request.args.get("format") == "json":
+        return jsonify(
+            totals=totals,
+            videos=[{
+                "video_id": v["video"]["id"], "title": v["video"]["title"],
+                "owner": v["video"]["username"], "state": v["state"],
+                "stages": [dict(s) if s is not None else None for s in v["stages"]],
+            } for v in videos],
+        )
+    busy = any(v["state"] in ("queued", "running") for v in videos)
+    return render_template(
+        "jobs.html", videos=videos, totals=totals, stages=jobs.STAGES,
+        state=state, filters=jobs.DASHBOARD_FILTERS, video_id=video_id,
+        page=page, has_next=has_next, admin=admin, auto_refresh=busy,
+    )
+
+
+@app.route("/jobs/<job_id>/retry", methods=["POST"])
+@auth.login_required
+def retry_job(job_id):
+    conn = db.get_db()
+    job = conn.execute(
+        "SELECT j.id, v.user_id FROM processing_jobs j JOIN videos v"
+        " ON v.id = j.video_id WHERE j.id = ?", (job_id,)
+    ).fetchone()
+    if job is None:
+        abort(404)
+    if job["user_id"] != g.user["id"] and not _is_admin():
+        abort(403)
+    if jobs.retry(conn, job_id) is None:
+        flash("That job isn't failed, so there's nothing to retry.", "error")
+    else:
+        conn.commit()
+        jobs.notify()
+        flash("Retrying.", "success")
+    return redirect(_safe_next(request.form.get("next")) or url_for("jobs_dashboard"))
 
 
 @app.route("/watch/<video_id>")
@@ -395,6 +574,7 @@ def watch(video_id):
         else:
             src = url_for("media", video_id=video_id)
     is_owner = g.user is not None and g.user["id"] == video["user_id"]
+    participants = ingest.participants_for(conn, video_id)
     poster = url_for("thumb", video_id=video_id) if video["thumbnail_name"] else None
     comments = conn.execute(
         "SELECT c.id, c.body, c.created_at, c.user_id, u.username, u.belt"
@@ -404,7 +584,7 @@ def watch(video_id):
     ).fetchall()
     return render_template(
         "watch.html", video=video, src=src, poster=poster,
-        is_owner=is_owner, comments=comments
+        is_owner=is_owner, comments=comments, participants=participants
     )
 
 
@@ -533,22 +713,136 @@ def delete(video_id):
         abort(404)
     if video["user_id"] != g.user["id"]:
         abort(403)
-    storage.delete(video["stored_name"])
-    if video["thumbnail_name"]:
-        storage.delete(video["thumbnail_name"])
-    # If it's still compressing, drop the raw upload too; the worker notices
-    # the missing row when it finishes and discards its output.
+    stages.delete_video_files(storage, conn, video)
+    # If it's still processing, drop the staged upload too; the worker
+    # notices the missing row when it finishes and discards its output.
+    staged = [
+        json.loads(row["input"]).get("staged_path")
+        for row in conn.execute(
+            "SELECT input FROM processing_jobs WHERE video_id = ? AND stage = 'ingest'"
+            " AND status != 'succeeded' AND input IS NOT NULL", (video_id,))
+    ]
     for name in os.listdir(app.config["INCOMING_DIR"]):
         if name.startswith(f"raw_{video_id}"):
+            staged.append(os.path.join(app.config["INCOMING_DIR"], name))
+    for path in staged:
+        # Only files we staged ourselves (never a bulk-import source folder).
+        if path and os.path.dirname(os.path.abspath(path)) == os.path.abspath(
+                app.config["INCOMING_DIR"]):
             try:
-                os.remove(os.path.join(app.config["INCOMING_DIR"], name))
+                os.remove(path)
             except FileNotFoundError:
                 pass
-    conn.execute("DELETE FROM comments WHERE video_id = ?", (video_id,))
-    conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+    ingest.delete_video_rows(conn, video_id)
     conn.commit()
     flash("Video deleted.", "success")
     return redirect(url_for("index"))
+
+
+# --- CLI: bulk import and job runner (ING-2) ----------------------------------
+
+import click  # noqa: E402  (bundled with Flask)
+
+
+def _import_defaults(competition, event_date, source, license_):
+    return {"competition": competition, "event_date": event_date,
+            "source": source, "license": license_}
+
+
+def _import_user(username):
+    conn = db.connect(app.config["DATABASE"])
+    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    if row is None:
+        raise click.UsageError(f"unknown user '{username}'")
+    return row["id"]
+
+
+def _report(result, process):
+    for relpath, video_id in result["created"]:
+        click.echo(f"queued   {relpath} -> {video_id}")
+    for relpath, reason in result["skipped"]:
+        click.echo(f"skipped  {relpath} ({reason})")
+    for relpath, reason in result["errors"]:
+        click.echo(f"error    {relpath}: {reason}", err=True)
+    click.echo(f"{len(result['created'])} queued, {len(result['skipped'])} skipped,"
+               f" {len(result['errors'])} errors")
+    if process:
+        ran = jobs.run_pending(pipeline)
+        click.echo(f"ran {ran} processing jobs")
+    if result["errors"]:
+        raise SystemExit(1)
+
+
+_import_options = [
+    click.option("--user", "username", required=True, help="Owner of the imported videos"),
+    click.option("--license", "license_", default="", help="License for every file (required unless the manifest gives one)"),
+    click.option("--competition", default="", help="Competition/event name"),
+    click.option("--event-date", default="", help="Match date, YYYY-MM-DD"),
+    click.option("--source", default="", help="Where the footage came from"),
+    click.option("--manifest", type=click.Path(exists=True, dir_okay=False),
+                 help="CSV with a 'file' column plus per-file metadata columns"),
+    click.option("--process", is_flag=True,
+                 help="Run the processing jobs now instead of leaving them to the worker"),
+]
+
+
+def _with_import_options(fn):
+    for option in reversed(_import_options):
+        fn = option(fn)
+    return fn
+
+
+@app.cli.command("import-folder")
+@click.argument("folder", type=click.Path(exists=True, file_okay=False))
+@click.option("--no-recursive", is_flag=True, help="Don't descend into subfolders")
+@_with_import_options
+def import_folder_command(folder, no_recursive, username, license_, competition,
+                          event_date, source, manifest, process):
+    """Bulk-import every video file under FOLDER (ING-2)."""
+    conn = db.connect(app.config["DATABASE"])
+    try:
+        result = ingest.bulk_import_folder(
+            conn, folder, user_id=_import_user(username),
+            defaults=_import_defaults(competition, event_date, source, license_),
+            manifest=ingest.load_manifest(manifest) if manifest else None,
+            recursive=not no_recursive, max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+    finally:
+        conn.close()
+    _report(result, process)
+
+
+@app.cli.command("import-storage")
+@click.argument("prefix")
+@_with_import_options
+def import_storage_command(prefix, username, license_, competition, event_date,
+                           source, manifest, process):
+    """Bulk-import every video already in storage under PREFIX (ING-2).
+
+    With Azure configured this imports from the blob container (e.g. files
+    dropped into `inbox/` with azcopy or Storage Explorer); locally, from the
+    uploads folder.
+    """
+    conn = db.connect(app.config["DATABASE"])
+    try:
+        result = ingest.bulk_import_storage(
+            conn, storage, prefix, user_id=_import_user(username),
+            defaults=_import_defaults(competition, event_date, source, license_),
+            manifest=ingest.load_manifest(manifest) if manifest else None,
+            max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+    except ingest.MetadataError as exc:
+        raise click.UsageError(str(exc))
+    finally:
+        conn.close()
+    _report(result, process)
+
+
+@app.cli.command("run-jobs")
+def run_jobs_command():
+    """Run all runnable processing jobs in this process, then exit."""
+    click.echo(f"ran {jobs.run_pending(pipeline)} processing jobs")
 
 
 @app.template_filter("filesize")
@@ -557,6 +851,15 @@ def filesize(num):
         if num < 1024 or unit == "GB":
             return f"{num:.1f} {unit}" if unit != "B" else f"{int(num)} B"
         num /= 1024
+
+
+@app.template_filter("duration")
+def duration(ms):
+    """Format milliseconds as H:MM:SS or M:SS."""
+    seconds = int((ms or 0) // 1000)
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
 
 
 @app.errorhandler(404)

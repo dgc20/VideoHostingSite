@@ -198,7 +198,8 @@ def build_registrar(site_url, token):
 # --- core orchestration (unit-testable) ---------------------------------
 
 def sync(source_dir, putter, registrar, manifest_path, username,
-         compress=False, dry_run=False):
+         compress=False, dry_run=False, license="own-footage", source="iCloud",
+         competition=""):
     """Upload+register every new video in source_dir. Returns a summary dict."""
     manifest = load_manifest(manifest_path)
     summary = {"new": 0, "skipped": 0, "failed": 0}
@@ -248,6 +249,10 @@ def sync(source_dir, putter, registrar, manifest_path, username,
                 "size_bytes": size,
                 "content_type": content_type,
                 "thumbnail_name": thumbnail_name,
+                # The server refuses footage without a license (ING-4).
+                "license": license,
+                "source": source,
+                "competition": competition,
             })
             if status in (200, 201):
                 manifest[sid] = {"stored_name": stored_name,
@@ -295,6 +300,11 @@ def main(argv=None):
                         help="where to record already-synced videos")
     parser.add_argument("--compress", action="store_true",
                         help="transcode/compress each video before upload")
+    parser.add_argument("--license", default="own-footage",
+                        help="license recorded for every imported video"
+                             " (default: own-footage)")
+    parser.add_argument("--competition", default="",
+                        help="competition/event to record for the imported videos")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be synced, upload nothing")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -335,6 +345,7 @@ def main(argv=None):
         source_dir, putter, registrar, args.manifest,
         username=os.environ.get("IMPORT_USERNAME", ""),
         compress=args.compress, dry_run=args.dry_run,
+        license=args.license, competition=args.competition,
     )
     log.info("Done. new=%(new)d skipped=%(skipped)d failed=%(failed)d", summary)
     return 1 if summary["failed"] else 0

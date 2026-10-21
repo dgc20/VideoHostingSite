@@ -11,16 +11,23 @@
     {% if video['status'] == 'processing' %}
       <div class="status-panel">
         <div class="spinner"></div>
-        <h2>Compressing your video…</h2>
-        <p>Large uploads are compressed to stream smoothly. This page
-           refreshes automatically and the video will appear when it's
-           ready — you can safely leave and come back later.</p>
+        <h2>Processing your video…</h2>
+        <p>It's being converted to a standard format for smooth streaming.
+           This page refreshes automatically and the video will appear when
+           it's ready — you can safely leave and come back later.</p>
       </div>
     {% elif video['status'] == 'failed' %}
       <div class="status-panel status-failed">
         <h2>Processing failed</h2>
         <p>Something went wrong while processing this video and its file
            was lost. Please delete it and upload again.</p>
+      </div>
+    {% elif video['status'] == 'duplicate' %}
+      <div class="status-panel">
+        <h2>Already in the library</h2>
+        <p>This file is identical to
+           <a href="{{ url_for('watch', video_id=video['duplicate_of']) }}">a video that was
+           uploaded earlier</a>, so it wasn't processed again.</p>
       </div>
     {% else %}
       <video controls playsinline webkit-playsinline preload="metadata"
@@ -33,8 +40,21 @@
       · uploaded {{ video['uploaded_at'] }} UTC
       · {{ video['size_bytes'] | filesize }}
     </p>
+    {% if video['competition'] or video['event_date'] or participants or video['license'] %}
+      <dl class="match-meta">
+        {% if video['competition'] %}<dt>Competition</dt><dd>{{ video['competition'] }}</dd>{% endif %}
+        {% if video['event_date'] %}<dt>Date</dt><dd>{{ video['event_date'] }}</dd>{% endif %}
+        {% if participants %}<dt>Competitors</dt><dd>
+          {% for p in participants %}{{ p['name'] }}{% if p['team'] %} ({{ p['team'] }}){% endif %}{{ ' vs ' if not loop.last }}{% endfor %}
+        </dd>{% endif %}
+        {% if video['duration_ms'] %}<dt>Length</dt><dd>{{ video['duration_ms'] | duration }}</dd>{% endif %}
+        {% if video['source'] %}<dt>Source</dt><dd>{{ video['source'] }}</dd>{% endif %}
+        {% if video['license'] %}<dt>License</dt><dd>{{ video['license'] }}</dd>{% endif %}
+      </dl>
+    {% endif %}
     {% if video['description'] %}<p class="description">{{ video['description'] }}</p>{% endif %}
     {% if is_owner %}
+      <p class="hint"><a href="{{ url_for('jobs_dashboard', video=video['id']) }}">Processing details</a></p>
       <form method="post" action="{{ url_for('delete', video_id=video['id']) }}"
             onsubmit="return confirm('Delete this video permanently?');">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

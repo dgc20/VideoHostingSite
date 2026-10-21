@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Processing jobs — BJJ Video Hosting{% endblock %}
+{% block head %}
+  {% if auto_refresh %}<meta http-equiv="refresh" content="10">{% endif %}
+{% endblock %}
+{% block content %}
+  <div class="jobs-page">
+    <h1>Processing jobs</h1>
+    <p class="meta">
+      {% if admin %}All videos (admin view).{% else %}Your videos.{% endif %}
+      Each upload runs {{ stages|join(' → ') }}. Failed stages are retried
+      automatically; use Retry once they've given up.
+      {% if auto_refresh %}This page refreshes every 10 seconds while work is in progress.{% endif %}
+    </p>
+
+    <div class="table-wrap">
+      <table class="jobs-totals">
+        <thead><tr><th>Stage</th>
+          {% for s in ['queued', 'running', 'succeeded', 'failed', 'skipped'] %}<th>{{ s|capitalize }}</th>{% endfor %}
+        </tr></thead>
+        <tbody>
+          {% for stage in stages %}
+            <tr><th scope="row">{{ stage }}</th>
+              {% for s in ['queued', 'running', 'succeeded', 'failed', 'skipped'] %}
+                <td class="{{ 'num-' ~ s if totals[stage][s] else 'num-zero' }}">{{ totals[stage][s] }}</td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <nav class="job-filters" aria-label="Filter">
+      {% for f in filters %}
+        <a href="{{ url_for('jobs_dashboard', state=f) }}"
+           class="chip-link{{ ' active' if f == state and not video_id }}">{{ f|capitalize }}</a>
+      {% endfor %}
+      {% if video_id %}<span class="chip-link active">One video</span>{% endif %}
+    </nav>
+
+    {% if videos %}
+      <div class="table-wrap">
+        <table class="jobs-table">
+          <thead><tr>
+            <th>Video</th>
+            {% for stage in stages %}<th>{{ stage|capitalize }}</th>{% endfor %}
+            <th></th>
+          </tr></thead>
+          <tbody>
+            {% for v in videos %}
+              <tr class="state-{{ v.state }}">
+                <td>
+                  <a href="{{ url_for('watch', video_id=v.video['id']) }}">{{ v.video['title'] }}</a>
+                  <div class="meta">
+                    {{ v.video['uploaded_at'] }} UTC
+                    {% if admin and v.video['username'] %}· {{ v.video['username'] }}{% endif %}
+                    · <span class="job-state job-state-{{ v.state }}">{{ v.state }}</span>
+                  </div>
+                </td>
+                {% for job in v.stages %}
+                  <td>
+                    {% if job %}
+                      <span class="job-chip job-{{ job['status'] }}"
+                            title="{{ job['error'] or job['model_version'] or '' }}">{{ job['status'] }}</span>
+                      {% if job['attempts'] > 1 or job['status'] == 'failed' %}
+                        <span class="attempts">try {{ job['attempts'] }}/{{ job['max_attempts'] }}</span>
+                      {% endif %}
+                      {% if job['error'] and job['status'] in ('failed', 'queued') %}
+                        <div class="job-error">{{ job['error'] }}</div>
+                      {% endif %}
+                    {% else %}–{% endif %}
+                  </td>
+                {% endfor %}
+                <td>
+                  {% if v.retryable %}
+                    <form method="post" action="{{ url_for('retry_job', job_id=v.retryable['id']) }}" class="inline">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <input type="hidden" name="next" value="{{ request.full_path }}">
+                      <button class="btn btn-ghost btn-small" type="submit">Retry</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="pager">
+        {% if page > 1 %}<a href="{{ url_for('jobs_dashboard', state=state, page=page - 1) }}">← Newer</a>{% endif %}
+        {% if has_next %}<a href="{{ url_for('jobs_dashboard', state=state, page=page + 1) }}">Older →</a>{% endif %}
+      </p>
+    {% else %}
+      <div class="empty"><p>No videos match.</p></div>
+    {% endif %}
+  </div>
+{% endblock %}

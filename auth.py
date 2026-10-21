@@ -78,14 +78,20 @@ def get_csrf_token():
 
 
 def check_csrf():
-    """before_request hook: reject POSTs without a valid CSRF token.
+    """before_request hook: reject state-changing requests without a valid
+    CSRF token, sent as a `csrf_token` form field or an `X-CSRF-Token`
+    header (used by the resumable uploader's fetch() calls).
 
     /api/ endpoints are exempt: they authenticate with a bearer token, which
     browsers never attach automatically, so they aren't CSRF-able.
     """
-    if request.method == "POST" and not request.path.startswith("/api/"):
+    if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+            and not request.path.startswith("/api/")):
         expected = session.get("csrf_token")
-        provided = request.form.get("csrf_token", "")
+        provided = request.headers.get("X-CSRF-Token") or ""
+        if not provided and request.mimetype in (
+                "application/x-www-form-urlencoded", "multipart/form-data"):
+            provided = request.form.get("csrf_token", "")
         if not expected or not secrets.compare_digest(expected, provided):
             abort(400, description="Invalid or missing CSRF token.")
 

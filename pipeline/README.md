@@ -79,6 +79,8 @@ Useful flags:
 | Flag | Effect |
 |---|---|
 | `--dry-run` | List what would be synced without uploading |
+| `--license NAME` | License recorded for each video (default `own-footage`; the server refuses imports without one) |
+| `--competition NAME` | Competition/event recorded for each video |
 | `--compress` | Transcode each video (H.264/AAC, ≤1080p) before upload |
 | `--manifest PATH` | Use a specific manifest file |
 | `--icloudpd-arg ...` | Pass an extra flag through to `icloudpd` (repeatable) |
@@ -86,6 +88,10 @@ Useful flags:
 
 Non-web formats (e.g. `.avi`, `.mkv`) are transcoded to MP4 automatically so
 browsers can play them; `--compress` transcodes everything.
+
+Once registered, each video goes through the site's processing pipeline
+(hash/dedupe, standard H.264 copy + 480p proxy, keyframes) like any upload;
+progress shows on the site's **Jobs** page.
 
 A thumbnail (poster frame) is extracted and uploaded for each video when
 ffmpeg is available (it ships with `imageio-ffmpeg` in this folder's
