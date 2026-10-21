@@ -14,8 +14,10 @@ If ffmpeg is unavailable or the transcode fails (corrupt input, unsupported
 codec), the original file is stored unmodified rather than failing the
 upload; 'failed' status is reserved for videos whose bytes were lost.
 """
+import glob
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -54,6 +56,139 @@ def compress(ffmpeg, in_path, out_path):
         check=True,
         capture_output=True,
     )
+
+
+# --- Analysis pipeline primitives (PRE-1, PRE-3) ---------------------------
+#
+# Pure ffmpeg wrappers: local file in, local files out. The job stages in
+# stages.py handle storage and the database around them. imageio-ffmpeg ships
+# ffmpeg but not ffprobe, so probe() parses `ffmpeg -i` output.
+
+# Bump when an output's encoding settings change, so reprocessed derivatives
+# land under new keys instead of overwriting immutable ones.
+TRANSCODE_VERSION = "transcode-v1"
+KEYFRAMES_VERSION = "keyframes-v1"
+
+_DURATION_RE = re.compile(r"Duration: (\d+):(\d\d):(\d\d(?:\.\d+)?)")
+_VIDEO_RE = re.compile(r"Stream #\S+.*?: Video: (\w+).*?, (\d{2,5})x(\d{2,5})")
+_FPS_RE = re.compile(r"([\d.]+) fps")
+_ROTATION_RE = re.compile(r"rotation of (-?[\d.]+) degrees|rotate\s*:\s*(-?\d+)")
+
+
+class ProbeError(Exception):
+    """ffmpeg could not read the file as a video."""
+
+
+def probe(ffmpeg, path):
+    """Return {duration_ms, fps, width, height, codec} for a video file.
+
+    Width/height are as displayed (swapped for 90-degree rotated phone
+    footage). Raises ProbeError if no video stream is found.
+    """
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", path], capture_output=True
+    )
+    # `ffmpeg -i` with no output always exits 1; the info is on stderr.
+    text = result.stderr.decode(errors="replace")
+    video = _VIDEO_RE.search(text)
+    if not video:
+        raise ProbeError(text.strip().splitlines()[-1] if text.strip() else "no output")
+    info = {
+        "codec": video.group(1),
+        "width": int(video.group(2)),
+        "height": int(video.group(3)),
+        "duration_ms": None,
+        "fps": None,
+    }
+    duration = _DURATION_RE.search(text)
+    if duration:
+        h, m, sec = duration.groups()
+        info["duration_ms"] = int(round((int(h) * 3600 + int(m) * 60 + float(sec)) * 1000))
+    line = text[video.start():].splitlines()[0]
+    fps = _FPS_RE.search(line)
+    if fps:
+        info["fps"] = float(fps.group(1))
+    rotation = _ROTATION_RE.search(text)
+    if rotation:
+        degrees = abs(float(rotation.group(1) or rotation.group(2))) % 180
+        if degrees == 90:
+            info["width"], info["height"] = info["height"], info["width"]
+    return info
+
+
+def transcode_renditions(ffmpeg, src_path, mezzanine_path, proxy_path):
+    """PRE-1: one decode, two outputs.
+
+    - mezzanine: H.264/AAC, fit inside 1920x1080 (never upscaled), CRF 23
+    - proxy: H.264/AAC at 480 lines (never upscaled), CRF 30, for analysis
+    Both are MP4 with faststart so they stream and seek well.
+    """
+    subprocess.run(
+        [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", src_path,
+            # Mezzanine
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", "scale=w='min(1920,iw)':h='min(1080,ih)'"
+                   ":force_original_aspect_ratio=decrease:force_divisible_by=2",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            mezzanine_path,
+            # Proxy
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", "scale=-2:'min(480,ih)'",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k",
+            "-movflags", "+faststart",
+            proxy_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+_SHOWINFO_RE = re.compile(r"Parsed_showinfo.*?pts_time:\s*(-?[\d.]+)")
+
+
+def extract_keyframes(ffmpeg, src_path, out_dir, interval_s=10,
+                      scene_threshold=0.4, width=512):
+    """PRE-3: keyframes at every shot change plus at least every interval_s.
+
+    A single ffmpeg pass selects a frame when it is the first frame, when the
+    scene-change score exceeds scene_threshold (a hard cut), or when
+    interval_s seconds have passed since the last selected frame. Frames are
+    written as JPEGs `width` px wide. Returns [(ts_ms, path), ...] in order.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    select = (
+        "select='isnan(prev_selected_t)"
+        f"+gte(t-prev_selected_t\\,{float(interval_s)})"
+        f"+gt(scene\\,{float(scene_threshold)})'"
+    )
+    pattern = os.path.join(out_dir, "kf_%06d.jpg")
+    result = subprocess.run(
+        [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "info",
+            "-i", src_path, "-an",
+            "-vf", f"{select},showinfo,scale={int(width)}:-2",
+            "-fps_mode", "vfr", "-q:v", "3",
+            pattern,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    times = [
+        float(t) for t in _SHOWINFO_RE.findall(result.stderr.decode(errors="replace"))
+    ]
+    files = sorted(glob.glob(os.path.join(out_dir, "kf_*.jpg")))
+    if len(times) != len(files):
+        raise RuntimeError(
+            f"keyframe timestamps ({len(times)}) and files ({len(files)}) disagree"
+        )
+    return [(int(round(t * 1000)), path) for t, path in zip(times, files)]
 
 
 def make_thumbnail(ffmpeg, src_path, out_path):
