@@ -128,9 +128,13 @@ VIDEO_PIPELINE_COLUMNS = (
 )
 
 
-def utcnow():
-    """Current UTC time in the same format SQLite's datetime('now') uses."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+def utcnow(precise=False):
+    """Current UTC time in the same format SQLite's datetime('now') uses.
+
+    precise=True adds microseconds, for columns used to order work FIFO.
+    """
+    fmt = "%Y-%m-%d %H:%M:%S.%f" if precise else "%Y-%m-%d %H:%M:%S"
+    return datetime.now(timezone.utc).strftime(fmt)
 
 
 def connect(database):

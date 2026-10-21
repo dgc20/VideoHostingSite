@@ -3,7 +3,7 @@
 {% block content %}
   <div class="form-page">
     <h1>Upload a video</h1>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data" id="upload-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>
         Video file
@@ -11,16 +11,48 @@
       </label>
       <label>
         Title
-        <input type="text" name="title" maxlength="200" placeholder="Defaults to the file name">
+        <input type="text" name="title" maxlength="200" placeholder="Defaults to the file name"
+               value="{{ form.get('title', '') }}">
       </label>
+      <fieldset class="meta-fields">
+        <legend>Match details</legend>
+        <label>
+          Competition
+          <input type="text" name="competition" maxlength="200"
+                 placeholder="e.g. IBJJF Pan Ams 2026" value="{{ form.get('competition', '') }}">
+        </label>
+        <label>
+          Date
+          <input type="date" name="event_date" value="{{ form.get('event_date', '') }}">
+        </label>
+        <label>
+          Competitors
+          <textarea name="participants" rows="2" maxlength="4000"
+                    placeholder="One per line: Name (Team)">{{ form.get('participants', '') }}</textarea>
+        </label>
+        <label>
+          Source
+          <input type="text" name="source" maxlength="500"
+                 placeholder="e.g. Filmed mat-side, FloGrappling, club archive"
+                 value="{{ form.get('source', '') }}">
+        </label>
+        <label>
+          License <span class="required">(required)</span>
+          <input type="text" name="license" maxlength="200" required list="license-options"
+                 value="{{ form.get('license', '') }}">
+          <datalist id="license-options">
+            {% for option in license_suggestions %}<option value="{{ option }}">{% endfor %}
+          </datalist>
+        </label>
+      </fieldset>
       <label>
         Description
-        <textarea name="description" rows="4" maxlength="5000" placeholder="Optional"></textarea>
+        <textarea name="description" rows="4" maxlength="5000" placeholder="Optional">{{ form.get('description', '') }}</textarea>
       </label>
       <button class="btn btn-primary" type="submit">Upload</button>
     </form>
-    <p class="hint">Supported formats: MP4, WebM, Ogg, MOV, M4V. Browsers play MP4 and WebM most reliably.
-       Videos over {{ (config['COMPRESS_THRESHOLD'] / 1048576) | int }} MB are compressed automatically
-       after upload (up to {{ (config['MAX_CONTENT_LENGTH'] / 1048576) | int }} MB accepted).</p>
+    <p class="hint">Supported formats: MP4, WebM, Ogg, MOV, M4V. Every upload is converted to a
+       standard H.264 copy (up to 1080p) plus a 480p analysis proxy, and keyframes are extracted.
+       Up to {{ (config['MAX_CONTENT_LENGTH'] / 1048576) | int }} MB without JavaScript.</p>
   </div>
 {% endblock %}

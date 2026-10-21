@@ -327,15 +327,18 @@ def _process(database, storage, video_id, raw_path):
 
 
 def resume_pending(database, storage, incoming_dir):
-    """Recover 'processing' videos after a restart.
+    """Recover legacy 'processing' videos after a restart.
 
     If the raw upload still exists in incoming_dir, restart its compression;
     otherwise the bytes are gone and the video is marked failed.
     """
     conn = sqlite3.connect(database)
     try:
+        # Videos with processing_jobs rows belong to the job pipeline
+        # (jobs.py), which resumes them itself.
         rows = conn.execute(
-            "SELECT id FROM videos WHERE status = 'processing'"
+            "SELECT id FROM videos WHERE status = 'processing' AND id NOT IN"
+            " (SELECT video_id FROM processing_jobs)"
         ).fetchall()
         for (video_id,) in rows:
             raw = next(

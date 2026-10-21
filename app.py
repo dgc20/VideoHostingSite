@@ -7,6 +7,7 @@ Run locally:
 In production (Azure App Service):
     gunicorn --bind=0.0.0.0:8000 --timeout 600 app:app
 """
+import json
 import mimetypes
 import os
 import re
@@ -31,10 +32,13 @@ from werkzeug.utils import secure_filename
 
 import auth
 import db
+import ingest
+import jobs
 import processing
+import stages
 import storage as storage_module
 
-ALLOWED_EXTENSIONS = {".mp4", ".webm", ".ogg", ".ogv", ".mov", ".m4v"}
+ALLOWED_EXTENSIONS = ingest.ALLOWED_EXTENSIONS
 # BJJ adult belt progression, in order.
 BELTS = ("white", "blue", "purple", "brown", "black")
 
@@ -61,6 +65,22 @@ app.config.update(
     # Bearer token for the /api/import endpoint used by the iCloud pipeline.
     # When unset, the endpoint is disabled.
     IMPORT_API_TOKEN=os.environ.get("IMPORT_API_TOKEN"),
+    # --- Analysis pipeline (Phase 0) ---
+    # Run the background job worker in this process ("0" disables it, e.g.
+    # when jobs are drained with `flask run-jobs` instead).
+    JOB_WORKER=os.environ.get("JOB_WORKER", "1") == "1",
+    JOB_MAX_ATTEMPTS=int(os.environ.get("JOB_MAX_ATTEMPTS", "3")),
+    JOB_LEASE_SECONDS=int(os.environ.get("JOB_LEASE_SECONDS", "120")),
+    KEYFRAME_INTERVAL_S=float(os.environ.get("KEYFRAME_INTERVAL_S", "10")),
+    KEYFRAME_SCENE_THRESHOLD=float(os.environ.get("KEYFRAME_SCENE_THRESHOLD", "0.4")),
+    # Resumable uploads (ING-1): total size cap and per-request chunk cap.
+    MAX_RESUMABLE_UPLOAD_BYTES=int(float(os.environ.get("MAX_RESUMABLE_UPLOAD_GB", "20"))
+                                   * 1024 * 1024 * 1024),
+    UPLOAD_CHUNK_BYTES=int(os.environ.get("UPLOAD_CHUNK_MB", "8")) * 1024 * 1024,
+    # Comma-separated usernames who see every job on the dashboard.
+    ADMIN_USERNAMES={
+        u.strip() for u in os.environ.get("ADMIN_USERNAMES", "").split(",") if u.strip()
+    },
 )
 os.makedirs(app.config["DATA_DIR"], exist_ok=True)
 app.config["DATABASE"] = os.path.join(app.config["DATA_DIR"], "videos.db")
@@ -72,10 +92,26 @@ os.makedirs(app.config["INCOMING_DIR"], exist_ok=True)
 db.init_db(app)
 storage = storage_module.create_storage(app.config)
 
-# Restart any compressions that were interrupted by a redeploy/restart.
+# Restart any legacy compressions that were interrupted by a redeploy/restart
+# (videos uploaded before the job pipeline existed).
 processing.resume_pending(
     app.config["DATABASE"], storage, app.config["INCOMING_DIR"]
 )
+
+pipeline = jobs.PipelineContext(
+    database=app.config["DATABASE"],
+    storage=storage,
+    work_root=os.path.join(app.config["INCOMING_DIR"], "work"),
+    compress_threshold=app.config["COMPRESS_THRESHOLD"],
+    keyframe_interval_s=app.config["KEYFRAME_INTERVAL_S"],
+    keyframe_scene_threshold=app.config["KEYFRAME_SCENE_THRESHOLD"],
+    max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+    lease_s=app.config["JOB_LEASE_SECONDS"],
+)
+if app.config["JOB_WORKER"]:
+    # Jobs left queued or running by a previous process resume here (running
+    # ones once their lease expires).
+    jobs.start_worker(pipeline)
 
 # Load the logged-in user and enforce CSRF on every request.
 app.before_request(auth.load_logged_in_user)
@@ -88,6 +124,7 @@ def inject_globals():
         "current_user": g.get("user"),
         "csrf_token": auth.get_csrf_token,
         "BELTS": BELTS,
+        "license_suggestions": ingest.LICENSE_SUGGESTIONS,
     }
 
 
@@ -281,15 +318,26 @@ def index():
         "SELECT v.*, u.username AS uploader, u.belt AS uploader_belt"
         " FROM videos v LEFT JOIN users u ON u.id = v.user_id"
     )
+    # Exact duplicates are kept for the record but not listed.
+    base += " WHERE v.status != 'duplicate'"
     if q:
         videos = conn.execute(
-            base + " WHERE v.title LIKE ? OR v.description LIKE ?"
+            base + " AND (v.title LIKE ? OR v.description LIKE ?"
+            " OR v.competition LIKE ? OR v.id IN (SELECT video_id FROM"
+            " video_participants WHERE name LIKE ? OR team LIKE ?))"
             " ORDER BY v.uploaded_at DESC",
-            (f"%{q}%", f"%{q}%"),
+            (f"%{q}%",) * 5,
         ).fetchall()
     else:
         videos = conn.execute(base + " ORDER BY v.uploaded_at DESC").fetchall()
     return render_template("index.html", videos=videos, q=q)
+
+
+def _upload_form_data():
+    return {key: request.form.get(key, "") for key in (
+        "title", "description", "competition", "event_date", "participants",
+        "source", "license",
+    )}
 
 
 @app.route("/upload", methods=["GET", "POST"])
@@ -297,80 +345,54 @@ def index():
 def upload():
     if request.method == "POST":
         file = request.files.get("video")
-        title = request.form.get("title", "").strip()
-        description = request.form.get("description", "").strip()
+        form = _upload_form_data()
 
         if not file or not file.filename:
             flash("Please choose a video file.", "error")
-            return redirect(url_for("upload"))
+            return render_template("upload.html", form=form), 400
         if not _allowed(file.filename):
             flash(
                 "Unsupported file type. Allowed: "
                 + ", ".join(sorted(ALLOWED_EXTENSIONS)),
                 "error",
             )
-            return redirect(url_for("upload"))
-        if not title:
-            title = os.path.splitext(secure_filename(file.filename))[0] or "Untitled"
+            return render_template("upload.html", form=form), 400
+        try:
+            meta = ingest.validate_metadata(
+                form, secure_filename(file.filename) or "video"
+            )
+        except ingest.MetadataError as exc:
+            flash(str(exc).capitalize() + ".", "error")
+            return render_template("upload.html", form=form), 400
 
+        # Land the upload on disk; the ingest job hashes it and moves it
+        # into storage, then the rest of the pipeline runs in the background.
         ext = os.path.splitext(file.filename)[1].lower()
-        video_id = uuid.uuid4().hex
-        stored_name = f"{video_id}{ext}"
-        content_type = (
-            mimetypes.guess_type(stored_name)[0] or "application/octet-stream"
-        )
-
-        # Land the upload on disk first so we can check its size before
-        # deciding whether it needs background compression.
         raw_path = os.path.join(
-            app.config["INCOMING_DIR"], f"raw_{video_id}{ext}"
+            app.config["INCOMING_DIR"], f"upload_{uuid.uuid4().hex}{ext}"
         )
         file.save(raw_path)
-        size = os.path.getsize(raw_path)
-
         conn = db.get_db()
-        if size <= app.config["COMPRESS_THRESHOLD"]:
-            try:
-                with open(raw_path, "rb") as f:
-                    if storage.is_remote:
-                        storage.save(f, stored_name, content_type)
-                    else:
-                        storage.save(f, stored_name)
-                # Extract a poster frame while we still have the local file.
-                thumbnail_name = processing.store_thumbnail(
-                    storage, video_id, raw_path
-                )
-            finally:
-                os.remove(raw_path)
-            conn.execute(
-                "INSERT INTO videos (id, title, description, stored_name,"
-                " content_type, size_bytes, user_id, status, thumbnail_name)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)",
-                (video_id, title, description, stored_name, content_type,
-                 size, g.user["id"], thumbnail_name),
-            )
-            conn.commit()
-            flash("Video uploaded.", "success")
-        else:
-            conn.execute(
-                "INSERT INTO videos (id, title, description, stored_name,"
-                " content_type, size_bytes, user_id, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'processing')",
-                (video_id, title, description, stored_name, content_type,
-                 size, g.user["id"]),
-            )
-            conn.commit()
-            processing.process_async(
-                app.config["DATABASE"], storage, video_id, raw_path
-            )
-            flash(
-                "Video uploaded — it's being compressed and will be ready"
-                " to watch in a few minutes.",
-                "success",
-            )
+        video_id = ingest.create_video(
+            conn,
+            user_id=g.user["id"],
+            meta=meta,
+            filename=file.filename,
+            size_bytes=os.path.getsize(raw_path),
+            ingest_input={"staged_path": raw_path, "delete_staged": True,
+                          "filename": file.filename},
+            max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+        conn.commit()
+        jobs.notify()
+        flash(
+            "Video uploaded — it's being processed and will be ready to"
+            " watch shortly.",
+            "success",
+        )
         return redirect(url_for("watch", video_id=video_id))
 
-    return render_template("upload.html")
+    return render_template("upload.html", form={"license": "own-footage"})
 
 
 @app.route("/watch/<video_id>")
@@ -395,6 +417,7 @@ def watch(video_id):
         else:
             src = url_for("media", video_id=video_id)
     is_owner = g.user is not None and g.user["id"] == video["user_id"]
+    participants = ingest.participants_for(conn, video_id)
     poster = url_for("thumb", video_id=video_id) if video["thumbnail_name"] else None
     comments = conn.execute(
         "SELECT c.id, c.body, c.created_at, c.user_id, u.username, u.belt"
@@ -404,7 +427,7 @@ def watch(video_id):
     ).fetchall()
     return render_template(
         "watch.html", video=video, src=src, poster=poster,
-        is_owner=is_owner, comments=comments
+        is_owner=is_owner, comments=comments, participants=participants
     )
 
 
@@ -533,19 +556,27 @@ def delete(video_id):
         abort(404)
     if video["user_id"] != g.user["id"]:
         abort(403)
-    storage.delete(video["stored_name"])
-    if video["thumbnail_name"]:
-        storage.delete(video["thumbnail_name"])
-    # If it's still compressing, drop the raw upload too; the worker notices
-    # the missing row when it finishes and discards its output.
+    stages.delete_video_files(storage, conn, video)
+    # If it's still processing, drop the staged upload too; the worker
+    # notices the missing row when it finishes and discards its output.
+    staged = [
+        json.loads(row["input"]).get("staged_path")
+        for row in conn.execute(
+            "SELECT input FROM processing_jobs WHERE video_id = ? AND stage = 'ingest'"
+            " AND status != 'succeeded' AND input IS NOT NULL", (video_id,))
+    ]
     for name in os.listdir(app.config["INCOMING_DIR"]):
         if name.startswith(f"raw_{video_id}"):
+            staged.append(os.path.join(app.config["INCOMING_DIR"], name))
+    for path in staged:
+        # Only files we staged ourselves (never a bulk-import source folder).
+        if path and os.path.dirname(os.path.abspath(path)) == os.path.abspath(
+                app.config["INCOMING_DIR"]):
             try:
-                os.remove(os.path.join(app.config["INCOMING_DIR"], name))
+                os.remove(path)
             except FileNotFoundError:
                 pass
-    conn.execute("DELETE FROM comments WHERE video_id = ?", (video_id,))
-    conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+    ingest.delete_video_rows(conn, video_id)
     conn.commit()
     flash("Video deleted.", "success")
     return redirect(url_for("index"))
@@ -557,6 +588,15 @@ def filesize(num):
         if num < 1024 or unit == "GB":
             return f"{num:.1f} {unit}" if unit != "B" else f"{int(num)} B"
         num /= 1024
+
+
+@app.template_filter("duration")
+def duration(ms):
+    """Format milliseconds as H:MM:SS or M:SS."""
+    seconds = int((ms or 0) // 1000)
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
 
 
 @app.errorhandler(404)
