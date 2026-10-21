@@ -8,7 +8,6 @@ In production (Azure App Service):
     gunicorn --bind=0.0.0.0:8000 --timeout 600 app:app
 """
 import json
-import mimetypes
 import os
 import re
 import secrets
@@ -110,10 +109,19 @@ pipeline = jobs.PipelineContext(
     max_attempts=app.config["JOB_MAX_ATTEMPTS"],
     lease_s=app.config["JOB_LEASE_SECONDS"],
 )
-if app.config["JOB_WORKER"]:
-    # Jobs left queued or running by a previous process resume here (running
-    # ones once their lease expires).
-    jobs.start_worker(pipeline)
+
+
+@app.before_request
+def _ensure_worker():
+    """Start the background job worker with the first web request.
+
+    Started lazily rather than at import so CLI commands (`flask
+    import-folder`, `flask run-jobs`) don't spawn a worker that dies with the
+    command mid-job. Jobs left queued or running by a previous process are
+    picked up here (running ones once their lease expires).
+    """
+    if app.config["JOB_WORKER"]:
+        jobs.start_worker(pipeline)
 
 # Load the logged-in user and enforce CSRF on every request.
 app.before_request(auth.load_logged_in_user)
@@ -228,8 +236,6 @@ def api_import():
     username = (data.get("username") or "").strip()
     stored_name = (data.get("stored_name") or "").strip()
     source_id = (data.get("source_id") or "").strip()
-    title = (data.get("title") or "").strip()
-    description = (data.get("description") or "").strip()
     thumbnail_name = (data.get("thumbnail_name") or "").strip() or None
 
     if not username or not stored_name or not source_id:
@@ -238,6 +244,10 @@ def api_import():
     for value in (stored_name, thumbnail_name):
         if value and ("/" in value or "\\" in value or ".." in value):
             return jsonify(error="invalid stored_name"), 400
+    try:
+        meta = ingest.validate_metadata(data, stored_name)
+    except ingest.MetadataError as exc:
+        return jsonify(error=str(exc)), 400
 
     conn = db.get_db()
     user = conn.execute(
@@ -257,34 +267,35 @@ def api_import():
             error=f"no stored file named '{stored_name}' — upload it first"
         ), 409
 
-    if not title:
-        title = os.path.splitext(stored_name)[0]
-    content_type = (
-        mimetypes.guess_type(stored_name)[0]
-        or data.get("content_type")
-        or "application/octet-stream"
-    )
     try:
         size = int(data.get("size_bytes") or 0)
     except (TypeError, ValueError):
         size = 0
 
-    video_id = uuid.uuid4().hex
     try:
-        conn.execute(
-            "INSERT INTO videos (id, title, description, stored_name,"
-            " content_type, size_bytes, user_id, status, source_id,"
-            " thumbnail_name) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)",
-            (video_id, title, description, stored_name, content_type, size,
-             user["id"], source_id, thumbnail_name),
+        # The uploaded blob is adopted in place as the video's original and
+        # goes through the same pipeline as any upload.
+        video_id = ingest.create_video(
+            conn, user_id=user["id"], meta=meta, filename=stored_name,
+            size_bytes=size, ingest_input={"source_key": stored_name},
+            source_id=source_id, max_attempts=app.config["JOB_MAX_ATTEMPTS"],
         )
+        if thumbnail_name and storage.exists(thumbnail_name):
+            # Show the pipeline's poster until our own keyframes are ready;
+            # tracked as an asset so deleting the video removes it.
+            conn.execute("UPDATE videos SET thumbnail_name = ? WHERE id = ?",
+                         (thumbnail_name, video_id))
+            stages.record_asset(conn, video_id, "thumbnail", thumbnail_name,
+                                pipeline_version="icloud-pipeline")
         conn.commit()
     except sqlite3.IntegrityError:
         # Concurrent import of the same source_id won the race.
+        conn.rollback()
         row = conn.execute(
             "SELECT id FROM videos WHERE source_id = ?", (source_id,)
         ).fetchone()
         return jsonify(id=row["id"], status="exists"), 200
+    jobs.notify()
     return jsonify(id=video_id, status="created"), 201
 
 
@@ -661,6 +672,112 @@ def delete(video_id):
     conn.commit()
     flash("Video deleted.", "success")
     return redirect(url_for("index"))
+
+
+# --- CLI: bulk import and job runner (ING-2) ----------------------------------
+
+import click  # noqa: E402  (bundled with Flask)
+
+
+def _import_defaults(competition, event_date, source, license_):
+    return {"competition": competition, "event_date": event_date,
+            "source": source, "license": license_}
+
+
+def _import_user(username):
+    conn = db.connect(app.config["DATABASE"])
+    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    if row is None:
+        raise click.UsageError(f"unknown user '{username}'")
+    return row["id"]
+
+
+def _report(result, process):
+    for relpath, video_id in result["created"]:
+        click.echo(f"queued   {relpath} -> {video_id}")
+    for relpath, reason in result["skipped"]:
+        click.echo(f"skipped  {relpath} ({reason})")
+    for relpath, reason in result["errors"]:
+        click.echo(f"error    {relpath}: {reason}", err=True)
+    click.echo(f"{len(result['created'])} queued, {len(result['skipped'])} skipped,"
+               f" {len(result['errors'])} errors")
+    if process:
+        ran = jobs.run_pending(pipeline)
+        click.echo(f"ran {ran} processing jobs")
+    if result["errors"]:
+        raise SystemExit(1)
+
+
+_import_options = [
+    click.option("--user", "username", required=True, help="Owner of the imported videos"),
+    click.option("--license", "license_", default="", help="License for every file (required unless the manifest gives one)"),
+    click.option("--competition", default="", help="Competition/event name"),
+    click.option("--event-date", default="", help="Match date, YYYY-MM-DD"),
+    click.option("--source", default="", help="Where the footage came from"),
+    click.option("--manifest", type=click.Path(exists=True, dir_okay=False),
+                 help="CSV with a 'file' column plus per-file metadata columns"),
+    click.option("--process", is_flag=True,
+                 help="Run the processing jobs now instead of leaving them to the worker"),
+]
+
+
+def _with_import_options(fn):
+    for option in reversed(_import_options):
+        fn = option(fn)
+    return fn
+
+
+@app.cli.command("import-folder")
+@click.argument("folder", type=click.Path(exists=True, file_okay=False))
+@click.option("--no-recursive", is_flag=True, help="Don't descend into subfolders")
+@_with_import_options
+def import_folder_command(folder, no_recursive, username, license_, competition,
+                          event_date, source, manifest, process):
+    """Bulk-import every video file under FOLDER (ING-2)."""
+    conn = db.connect(app.config["DATABASE"])
+    try:
+        result = ingest.bulk_import_folder(
+            conn, folder, user_id=_import_user(username),
+            defaults=_import_defaults(competition, event_date, source, license_),
+            manifest=ingest.load_manifest(manifest) if manifest else None,
+            recursive=not no_recursive, max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+    finally:
+        conn.close()
+    _report(result, process)
+
+
+@app.cli.command("import-storage")
+@click.argument("prefix")
+@_with_import_options
+def import_storage_command(prefix, username, license_, competition, event_date,
+                           source, manifest, process):
+    """Bulk-import every video already in storage under PREFIX (ING-2).
+
+    With Azure configured this imports from the blob container (e.g. files
+    dropped into `inbox/` with azcopy or Storage Explorer); locally, from the
+    uploads folder.
+    """
+    conn = db.connect(app.config["DATABASE"])
+    try:
+        result = ingest.bulk_import_storage(
+            conn, storage, prefix, user_id=_import_user(username),
+            defaults=_import_defaults(competition, event_date, source, license_),
+            manifest=ingest.load_manifest(manifest) if manifest else None,
+            max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+    except ingest.MetadataError as exc:
+        raise click.UsageError(str(exc))
+    finally:
+        conn.close()
+    _report(result, process)
+
+
+@app.cli.command("run-jobs")
+def run_jobs_command():
+    """Run all runnable processing jobs in this process, then exit."""
+    click.echo(f"ran {jobs.run_pending(pipeline)} processing jobs")
 
 
 @app.template_filter("filesize")

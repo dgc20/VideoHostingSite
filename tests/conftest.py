@@ -6,7 +6,6 @@ jobs.run_pending, except the Gate 1 test which exercises the real worker),
 and sample videos are synthesised with ffmpeg's lavfi test sources.
 """
 import importlib
-import os
 import subprocess
 import sys
 import uuid

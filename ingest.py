@@ -354,3 +354,117 @@ def upload_status(session):
         "status": session["status"],
         "video_id": session["video_id"],
     }
+
+
+# --- bulk import (ING-2) -----------------------------------------------------
+#
+# Import every video under a local folder, or under a key prefix in the app's
+# own storage (the local uploads dir or the Azure container — the repo's
+# equivalent of "an S3/GCS bucket"). Metadata comes from defaults given on
+# the command line, overridden per file by an optional CSV manifest with a
+# `file` column (path relative to the folder/prefix, or bare file name) and
+# any of: title, description, competition, event_date, participants, source,
+# license. Re-running is idempotent: each file has a stable source_id.
+
+MANIFEST_FIELDS = ("title", "description", "competition", "event_date",
+                   "participants", "source", "license")
+
+
+def load_manifest(path):
+    """Read a CSV manifest into {file: {field: value}}."""
+    import csv
+
+    rows = {}
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "file" not in reader.fieldnames:
+            raise MetadataError("manifest needs a 'file' column")
+        for row in reader:
+            name = (row.get("file") or "").strip()
+            if name:
+                rows[name] = {k: (row.get(k) or "").strip() for k in MANIFEST_FIELDS
+                              if (row.get(k) or "").strip()}
+    return rows
+
+
+def _metadata_for(relpath, defaults, manifest):
+    data = dict(defaults)
+    override = manifest.get(relpath) or manifest.get(os.path.basename(relpath)) or {}
+    data.update(override)
+    return validate_metadata(data, relpath)
+
+
+def _import_one(conn, report, relpath, source_id, defaults, manifest, user_id,
+                size, ingest_input, max_attempts):
+    if conn.execute("SELECT 1 FROM videos WHERE source_id = ?", (source_id,)).fetchone():
+        report["skipped"].append((relpath, "already imported"))
+        return
+    try:
+        meta = _metadata_for(relpath, defaults, manifest)
+    except MetadataError as exc:
+        report["errors"].append((relpath, str(exc)))
+        return
+    video_id = create_video(
+        conn, user_id=user_id, meta=meta, filename=relpath, size_bytes=size,
+        ingest_input=ingest_input, source_id=source_id, max_attempts=max_attempts,
+    )
+    conn.commit()
+    report["created"].append((relpath, video_id))
+
+
+def _new_report():
+    return {"created": [], "skipped": [], "errors": []}
+
+
+def bulk_import_folder(conn, folder, *, user_id, defaults, manifest=None,
+                       recursive=True, max_attempts=3):
+    """Queue every video file under `folder`. Files are read in place (never
+    moved or deleted), so leave them there until their ingest job is done."""
+    folder = os.path.realpath(folder)
+    if not os.path.isdir(folder):
+        raise MetadataError(f"folder not found: {folder}")
+    manifest = manifest or {}
+    report = _new_report()
+    for root, dirs, files in os.walk(folder):
+        dirs.sort()
+        if not recursive:
+            dirs[:] = []
+        for name in sorted(files):
+            if name.startswith(".") or os.path.splitext(name)[1].lower() not in IMPORT_EXTENSIONS:
+                continue
+            path = os.path.join(root, name)
+            relpath = os.path.relpath(path, folder).replace(os.sep, "/")
+            size = os.path.getsize(path)
+            _import_one(
+                conn, report, relpath, f"folder:{path}:{size}", defaults, manifest,
+                user_id, size,
+                {"staged_path": path, "delete_staged": False, "filename": name},
+                max_attempts,
+            )
+    return report
+
+
+def bulk_import_storage(conn, storage, prefix, *, user_id, defaults, manifest=None,
+                        max_attempts=3):
+    """Queue every video object under `prefix` in storage; each object is
+    adopted in place as that video's immutable original."""
+    if not prefix.strip("/"):
+        raise MetadataError("a non-empty prefix is required (e.g. 'inbox/')")
+    manifest = manifest or {}
+    report = _new_report()
+    for key in storage.list(prefix):
+        if key.startswith("videos/") or os.path.splitext(key)[1].lower() not in IMPORT_EXTENSIONS:
+            continue  # videos/ holds the pipeline's own originals/derivatives
+        owned = conn.execute(
+            "SELECT 1 FROM videos WHERE stored_name = ? UNION ALL"
+            " SELECT 1 FROM assets WHERE uri = ?", (key, key),
+        ).fetchone()
+        if owned:
+            report["skipped"].append((key, "already belongs to a video"))
+            continue
+        relpath = key[len(prefix):].lstrip("/") or key
+        _import_one(
+            conn, report, relpath, f"storage:{key}", defaults, manifest, user_id,
+            storage.size(key), {"source_key": key}, max_attempts,
+        )
+    return report
