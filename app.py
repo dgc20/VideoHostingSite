@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import uuid
 
@@ -77,6 +78,7 @@ app.config.update(
     MAX_RESUMABLE_UPLOAD_BYTES=int(float(os.environ.get("MAX_RESUMABLE_UPLOAD_GB", "20"))
                                    * 1024 * 1024 * 1024),
     UPLOAD_CHUNK_BYTES=int(os.environ.get("UPLOAD_CHUNK_MB", "8")) * 1024 * 1024,
+    UPLOAD_SESSION_TTL_HOURS=int(os.environ.get("UPLOAD_SESSION_TTL_HOURS", "48")),
     # Comma-separated usernames who see every job on the dashboard.
     ADMIN_USERNAMES={
         u.strip() for u in os.environ.get("ADMIN_USERNAMES", "").split(",") if u.strip()
@@ -393,6 +395,85 @@ def upload():
         return redirect(url_for("watch", video_id=video_id))
 
     return render_template("upload.html", form={"license": "own-footage"})
+
+
+# --- Resumable uploads (ING-1); protocol described in ingest.py -------------
+
+def _json_login_required(view):
+    import functools
+
+    @functools.wraps(view)
+    def wrapped(*args, **kwargs):
+        if g.user is None:
+            return jsonify(error="login required"), 401
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _upload_error(exc):
+    return jsonify(error=str(exc), **exc.extra), exc.status
+
+
+def _upload_payload(session_row):
+    body = ingest.upload_status(session_row)
+    body["upload_url"] = url_for("resumable_upload", upload_id=session_row["id"])
+    if session_row["video_id"]:
+        body["watch_url"] = url_for("watch", video_id=session_row["video_id"])
+    return body
+
+
+@app.route("/uploads", methods=["POST"])
+@_json_login_required
+def create_resumable_upload():
+    conn = db.get_db()
+    ingest.expire_upload_sessions(
+        conn, app.config["INCOMING_DIR"], app.config["UPLOAD_SESSION_TTL_HOURS"]
+    )
+    try:
+        upload_id = ingest.create_upload_session(
+            conn,
+            user_id=g.user["id"],
+            data=request.get_json(silent=True) or {},
+            max_bytes=app.config["MAX_RESUMABLE_UPLOAD_BYTES"],
+            incoming_dir=app.config["INCOMING_DIR"],
+            free_bytes=shutil.disk_usage(app.config["INCOMING_DIR"]).free,
+        )
+    except ingest.UploadError as exc:
+        return _upload_error(exc)
+    conn.commit()
+    session_row = ingest.get_upload_session(conn, upload_id, g.user["id"])
+    body = _upload_payload(session_row)
+    body["chunk_size"] = app.config["UPLOAD_CHUNK_BYTES"]
+    return jsonify(body), 201
+
+
+@app.route("/uploads/<upload_id>", methods=["GET", "PUT", "DELETE"])
+@_json_login_required
+def resumable_upload(upload_id):
+    conn = db.get_db()
+    try:
+        session_row = ingest.get_upload_session(conn, upload_id, g.user["id"])
+        if request.method == "GET":
+            return jsonify(_upload_payload(session_row))
+        if request.method == "DELETE":
+            ingest.abort_upload(conn, session_row, app.config["INCOMING_DIR"])
+            conn.commit()
+            return jsonify(_upload_payload(
+                ingest.get_upload_session(conn, upload_id, g.user["id"])))
+        session_row = ingest.write_chunk(
+            conn, session_row, request.headers.get("Content-Range"),
+            request.stream,
+            max_chunk=app.config["UPLOAD_CHUNK_BYTES"],
+            incoming_dir=app.config["INCOMING_DIR"],
+            max_attempts=app.config["JOB_MAX_ATTEMPTS"],
+        )
+    except ingest.UploadError as exc:
+        return _upload_error(exc)
+    if session_row["status"] == "complete":
+        jobs.notify()
+        return jsonify(_upload_payload(session_row)), 201
+    return jsonify(_upload_payload(session_row))
 
 
 @app.route("/watch/<video_id>")

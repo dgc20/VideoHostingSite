@@ -3,7 +3,8 @@
 {% block content %}
   <div class="form-page">
     <h1>Upload a video</h1>
-    <form method="post" enctype="multipart/form-data" id="upload-form">
+    <form method="post" enctype="multipart/form-data" id="upload-form"
+          data-max-bytes="{{ config['MAX_RESUMABLE_UPLOAD_BYTES'] }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>
         Video file
@@ -50,9 +51,16 @@
         <textarea name="description" rows="4" maxlength="5000" placeholder="Optional">{{ form.get('description', '') }}</textarea>
       </label>
       <button class="btn btn-primary" type="submit">Upload</button>
+      <div id="upload-progress" class="upload-progress" hidden>
+        <progress max="1" value="0"></progress>
+        <span class="upload-progress-label" role="status"></span>
+      </div>
     </form>
     <p class="hint">Supported formats: MP4, WebM, Ogg, MOV, M4V. Every upload is converted to a
        standard H.264 copy (up to 1080p) plus a 480p analysis proxy, and keyframes are extracted.
-       Up to {{ (config['MAX_CONTENT_LENGTH'] / 1048576) | int }} MB without JavaScript.</p>
+       Uploads resume automatically after a dropped connection (up to
+       {{ (config['MAX_RESUMABLE_UPLOAD_BYTES'] / 1073741824) | int }} GB; choose the same file again
+       to resume after closing the page).</p>
   </div>
+  <script src="{{ url_for('static', filename='upload.js') }}" defer></script>
 {% endblock %}

@@ -349,3 +349,6 @@ main {
 .match-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 1rem 0 0; font-size: 0.9rem; }
 .match-meta dt { color: var(--muted); }
 .match-meta dd { margin: 0; word-break: break-word; }
+.upload-progress { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.upload-progress progress { width: 100%; accent-color: var(--accent); }
+.upload-progress-label { color: var(--muted); font-size: 0.85rem; }

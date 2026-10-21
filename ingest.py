@@ -155,3 +155,202 @@ def participants_for(conn, video_id):
 
 def metadata_json(meta):
     return json.dumps(meta)
+
+
+# --- resumable uploads (ING-1) ---------------------------------------------
+#
+# A small tus-like protocol, session-authenticated like the rest of the site:
+#
+#   POST   /uploads        {filename, size, ...metadata} -> {upload_id, offset}
+#   PUT    /uploads/<id>   body = bytes, Content-Range: bytes <start>-<end>/<size>
+#   GET    /uploads/<id>   -> {offset, size, status, video_id}
+#   DELETE /uploads/<id>   abandon the upload
+#
+# Chunks are appended to a staging file on local disk; the server's offset is
+# the source of truth, so a client that lost its connection asks for the
+# offset and continues from there. When the last byte arrives the upload
+# becomes a video and its processing jobs are queued.
+
+_CONTENT_RANGE_RE = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
+
+
+class UploadError(Exception):
+    def __init__(self, message, status=400, **extra):
+        super().__init__(message)
+        self.status = status
+        self.extra = extra
+
+
+def staging_path(incoming_dir, upload_id):
+    return os.path.join(incoming_dir, f"resumable_{upload_id}.part")
+
+
+def create_upload_session(conn, *, user_id, data, max_bytes, incoming_dir,
+                          free_bytes=None):
+    filename = os.path.basename(str(data.get("filename") or "").strip())
+    if not filename:
+        raise UploadError("filename is required")
+    if os.path.splitext(filename)[1].lower() not in ALLOWED_EXTENSIONS:
+        raise UploadError(
+            "unsupported file type; allowed: " + ", ".join(sorted(ALLOWED_EXTENSIONS))
+        )
+    try:
+        size = int(data.get("size"))
+    except (TypeError, ValueError):
+        raise UploadError("size must be the file size in bytes") from None
+    if size <= 0:
+        raise UploadError("size must be the file size in bytes")
+    if size > max_bytes:
+        raise UploadError(
+            f"file is too large ({max_bytes // (1024 ** 3)} GB max)", status=413
+        )
+    if free_bytes is not None and size > free_bytes:
+        raise UploadError("not enough disk space on the server for this upload",
+                          status=507)
+    try:
+        meta = validate_metadata(data, filename)
+    except MetadataError as exc:
+        raise UploadError(str(exc)) from None
+
+    upload_id = uuid.uuid4().hex
+    now = db.utcnow()
+    conn.execute(
+        "INSERT INTO upload_sessions (id, user_id, filename, size_bytes,"
+        " received_bytes, metadata, status, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, 0, ?, 'open', ?, ?)",
+        (upload_id, user_id, filename, size, metadata_json(meta), now, now),
+    )
+    # Create the staging file now so every chunk is a positioned write.
+    open(staging_path(incoming_dir, upload_id), "wb").close()
+    return upload_id
+
+
+def get_upload_session(conn, upload_id, user_id):
+    row = conn.execute(
+        "SELECT * FROM upload_sessions WHERE id = ? AND user_id = ?",
+        (upload_id, user_id),
+    ).fetchone()
+    if row is None:
+        raise UploadError("upload not found", status=404)
+    return row
+
+
+def write_chunk(conn, session, content_range, stream, *, max_chunk,
+                incoming_dir, max_attempts=3):
+    """Write one chunk at its offset. Returns the updated session row.
+
+    The chunk must start exactly at the server's current offset (else 409
+    with the offset to resume from). The offset only advances once the
+    whole chunk is on disk, so an interrupted request can simply be resent.
+    """
+    if session["status"] != "open":
+        raise UploadError(f"upload is {session['status']}", status=409,
+                          offset=session["received_bytes"])
+    match = _CONTENT_RANGE_RE.match(content_range or "")
+    if not match:
+        raise UploadError("Content-Range must be 'bytes <start>-<end>/<size>'")
+    start, end, total = (int(x) for x in match.groups())
+    if total != session["size_bytes"] or end < start or end >= total:
+        raise UploadError("Content-Range doesn't match this upload")
+    length = end - start + 1
+    if length > max_chunk:
+        raise UploadError(f"chunk too large ({max_chunk} bytes max)", status=413)
+    if start != session["received_bytes"]:
+        raise UploadError("chunk doesn't start at the current offset", status=409,
+                          offset=session["received_bytes"])
+
+    path = staging_path(incoming_dir, session["id"])
+    if not os.path.exists(path):
+        raise UploadError("upload data is missing; start a new upload", status=410)
+    written = 0
+    with open(path, "r+b") as f:
+        f.seek(start)
+        while written < length:
+            data = stream.read(min(1024 * 1024, length - written))
+            if not data:
+                break
+            f.write(data)
+            written += len(data)
+        if stream.read(1):
+            raise UploadError("body is longer than Content-Range says")
+    if written != length:
+        raise UploadError("body is shorter than Content-Range says", status=400,
+                          offset=session["received_bytes"])
+
+    cur = conn.execute(
+        "UPDATE upload_sessions SET received_bytes = ?, updated_at = ?"
+        " WHERE id = ? AND received_bytes = ? AND status = 'open'",
+        (end + 1, db.utcnow(), session["id"], start),
+    )
+    if cur.rowcount != 1:
+        conn.rollback()
+        fresh = conn.execute(
+            "SELECT received_bytes FROM upload_sessions WHERE id = ?", (session["id"],)
+        ).fetchone()
+        raise UploadError("concurrent write to this upload", status=409,
+                          offset=fresh["received_bytes"])
+    if end + 1 == session["size_bytes"]:
+        _finish_upload(conn, session, path, max_attempts)
+    conn.commit()
+    return conn.execute(
+        "SELECT * FROM upload_sessions WHERE id = ?", (session["id"],)
+    ).fetchone()
+
+
+def _finish_upload(conn, session, path, max_attempts):
+    meta = json.loads(session["metadata"])
+    ext = os.path.splitext(session["filename"])[1].lower()
+    staged = os.path.join(os.path.dirname(path), f"upload_{session['id']}{ext}")
+    os.replace(path, staged)
+    video_id = create_video(
+        conn,
+        user_id=session["user_id"],
+        meta=meta,
+        filename=session["filename"],
+        size_bytes=session["size_bytes"],
+        ingest_input={"staged_path": staged, "delete_staged": True,
+                      "filename": session["filename"]},
+        max_attempts=max_attempts,
+    )
+    conn.execute(
+        "UPDATE upload_sessions SET status = 'complete', video_id = ?,"
+        " updated_at = ? WHERE id = ?",
+        (video_id, db.utcnow(), session["id"]),
+    )
+
+
+def abort_upload(conn, session, incoming_dir):
+    if session["status"] == "open":
+        conn.execute(
+            "UPDATE upload_sessions SET status = 'aborted', updated_at = ? WHERE id = ?",
+            (db.utcnow(), session["id"]),
+        )
+        try:
+            os.remove(staging_path(incoming_dir, session["id"]))
+        except FileNotFoundError:
+            pass
+
+
+def expire_upload_sessions(conn, incoming_dir, max_age_hours):
+    """Abort open uploads untouched for max_age_hours and free their disk."""
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    stale = conn.execute(
+        "SELECT * FROM upload_sessions WHERE status = 'open' AND updated_at < ?",
+        (cutoff,),
+    ).fetchall()
+    for session in stale:
+        abort_upload(conn, session, incoming_dir)
+    return len(stale)
+
+
+def upload_status(session):
+    return {
+        "upload_id": session["id"],
+        "offset": session["received_bytes"],
+        "size": session["size_bytes"],
+        "status": session["status"],
+        "video_id": session["video_id"],
+    }
