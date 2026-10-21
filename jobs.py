@@ -344,6 +344,87 @@ def run_pending(ctx, max_jobs=None):
     return count
 
 
+# --- dashboard queries (OPS-1) ----------------------------------------------
+
+DASHBOARD_FILTERS = ("all", "active", "failed", "done")
+
+
+def pipeline_state(stage_rows, video_status):
+    """Summarise one video's stages as a single state for the dashboard."""
+    statuses = {row["status"] for row in stage_rows}
+    if FAILED in statuses:
+        return "failed"
+    if RUNNING in statuses:
+        return "running"
+    if QUEUED in statuses:
+        return "queued"
+    if video_status == "duplicate":
+        return "duplicate"
+    return "done"
+
+
+def dashboard(conn, user_id=None, state="all", video_id=None, limit=50, offset=0):
+    """Videos with their per-stage jobs, newest first.
+
+    user_id restricts to one owner's videos (None = everything, for admins).
+    state filters by pipeline state: active (queued/running), failed, done.
+    Returns (videos, stage_totals) where stage_totals[stage][status] = count
+    over the same scope (ignoring the state filter and paging).
+    """
+    scope, params = [], []
+    if user_id is not None:
+        scope.append("v.user_id = ?")
+        params.append(user_id)
+    if video_id is not None:
+        scope.append("v.id = ?")
+        params.append(video_id)
+    filters = list(scope)
+    has = "EXISTS (SELECT 1 FROM processing_jobs x WHERE x.video_id = v.id AND x.status IN ({}))"
+    if state == "active":
+        filters.append(has.format("'queued', 'running'"))
+    elif state == "failed":
+        filters.append(has.format("'failed'"))
+    elif state == "done":
+        filters.append("NOT " + has.format("'queued', 'running', 'failed'"))
+    where = " AND ".join(["EXISTS (SELECT 1 FROM processing_jobs j WHERE j.video_id = v.id)"]
+                         + filters)
+    rows = conn.execute(
+        "SELECT v.id, v.title, v.status, v.uploaded_at, v.duration_ms, v.user_id,"
+        " u.username FROM videos v LEFT JOIN users u ON u.id = v.user_id"
+        f" WHERE {where} ORDER BY v.uploaded_at DESC, v.id LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    ).fetchall()
+    videos = []
+    for row in rows:
+        stage_rows = conn.execute(
+            "SELECT * FROM processing_jobs WHERE video_id = ?", (row["id"],)
+        ).fetchall()
+        by_stage = {r["stage"]: r for r in stage_rows}
+        videos.append({
+            "video": row,
+            "stages": [by_stage.get(stage) for stage in STAGES],
+            "state": pipeline_state(stage_rows, row["status"]),
+            "retryable": next(
+                (r for r in (by_stage.get(s) for s in STAGES)
+                 if r is not None and r["status"] in (FAILED, SKIPPED)
+                 and row["status"] != "duplicate"),
+                None,
+            ),
+        })
+
+    totals = {stage: {s: 0 for s in (QUEUED, RUNNING, SUCCEEDED, FAILED, SKIPPED)}
+              for stage in STAGES}
+    scope_sql = (" AND " + " AND ".join(scope)) if scope else ""
+    for stage, status, count in conn.execute(
+        "SELECT j.stage, j.status, COUNT(*) FROM processing_jobs j"
+        f" JOIN videos v ON v.id = j.video_id WHERE 1 = 1{scope_sql}"
+        " GROUP BY j.stage, j.status",
+        params,
+    ):
+        totals[stage][status] = count
+    return videos, totals
+
+
 # --- background worker -------------------------------------------------------
 
 class Worker(threading.Thread):

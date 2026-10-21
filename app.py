@@ -487,6 +487,71 @@ def resumable_upload(upload_id):
     return jsonify(_upload_payload(session_row))
 
 
+# --- Job dashboard (OPS-1) ---------------------------------------------------
+
+def _is_admin():
+    return g.user is not None and g.user["username"] in app.config["ADMIN_USERNAMES"]
+
+
+@app.route("/jobs")
+@auth.login_required
+def jobs_dashboard():
+    state = request.args.get("state", "all")
+    if state not in jobs.DASHBOARD_FILTERS:
+        state = "all"
+    video_id = request.args.get("video") or None
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    per_page = 50
+    admin = _is_admin()
+    videos, totals = jobs.dashboard(
+        db.get_db(),
+        user_id=None if admin else g.user["id"],
+        state=state, video_id=video_id,
+        limit=per_page + 1, offset=(page - 1) * per_page,
+    )
+    has_next = len(videos) > per_page
+    videos = videos[:per_page]
+    if request.args.get("format") == "json":
+        return jsonify(
+            totals=totals,
+            videos=[{
+                "video_id": v["video"]["id"], "title": v["video"]["title"],
+                "owner": v["video"]["username"], "state": v["state"],
+                "stages": [dict(s) if s is not None else None for s in v["stages"]],
+            } for v in videos],
+        )
+    busy = any(v["state"] in ("queued", "running") for v in videos)
+    return render_template(
+        "jobs.html", videos=videos, totals=totals, stages=jobs.STAGES,
+        state=state, filters=jobs.DASHBOARD_FILTERS, video_id=video_id,
+        page=page, has_next=has_next, admin=admin, auto_refresh=busy,
+    )
+
+
+@app.route("/jobs/<job_id>/retry", methods=["POST"])
+@auth.login_required
+def retry_job(job_id):
+    conn = db.get_db()
+    job = conn.execute(
+        "SELECT j.id, v.user_id FROM processing_jobs j JOIN videos v"
+        " ON v.id = j.video_id WHERE j.id = ?", (job_id,)
+    ).fetchone()
+    if job is None:
+        abort(404)
+    if job["user_id"] != g.user["id"] and not _is_admin():
+        abort(403)
+    if jobs.retry(conn, job_id) is None:
+        flash("That job isn't failed, so there's nothing to retry.", "error")
+    else:
+        conn.commit()
+        jobs.notify()
+        flash("Retrying.", "success")
+    return redirect(_safe_next(request.form.get("next")) or url_for("jobs_dashboard"))
+
+
 @app.route("/watch/<video_id>")
 def watch(video_id):
     conn = db.get_db()

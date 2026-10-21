@@ -54,6 +54,7 @@
     {% endif %}
     {% if video['description'] %}<p class="description">{{ video['description'] }}</p>{% endif %}
     {% if is_owner %}
+      <p class="hint"><a href="{{ url_for('jobs_dashboard', video=video['id']) }}">Processing details</a></p>
       <form method="post" action="{{ url_for('delete', video_id=video['id']) }}"
             onsubmit="return confirm('Delete this video permanently?');">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
