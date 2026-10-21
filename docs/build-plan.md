@@ -115,7 +115,9 @@ with a heartbeat thread, so a crashed/restarted process's job is retried
 after its lease expires (safe with several gunicorn workers too). Failures
 are retried automatically up to `JOB_MAX_ATTEMPTS` (default 3); after that
 the job is `failed`, downstream stages become `skipped`, and the dashboard
-offers a manual retry.
+offers a manual retry. The worker thread starts with the web app's first
+request (not at import), so CLI commands such as `flask import-folder` never
+spawn a worker that would die mid-job when the command exits.
 
 - **ingest**: hash (SHA-256), exact-duplicate check, store the original
   write-once at `videos/<id>/original<ext>` (or adopt an object already in
@@ -196,4 +198,16 @@ existing key is always complete).
 
 ## 11. Traceability
 
-Filled in as slices land — see the end of this file.
+| Req | Status | Code | Tests |
+|---|---|---|---|
+| ING-1 resumable upload ≤20 GB | **done** | `ingest.py` (resumable section), `app.py` `/uploads` routes, `static/upload.js`, `auth.py` (header CSRF) | `tests/test_resumable_upload.py`; browser run with injected network failure (manual, Playwright) |
+| ING-2 bulk import (bucket/folder) | **done** (folder + local/Azure storage prefix; no S3/GCS) | `ingest.py` (bulk import), `app.py` CLI `import-folder`, `import-storage`, `run-jobs`; `/api/import` | `tests/test_bulk_import.py`, `tests/test_gate1.py` |
+| ING-4 metadata on upload | **done** (license mandatory) | `ingest.validate_metadata`, `video_participants`, `templates/upload.html`, `templates/watch.html`, `pipeline/sync_icloud.py` | `tests/test_metadata.py`, `tests/test_pipeline.py`, `tests/test_bulk_import.py` |
+| ING-5 dedupe (P1, optional) | **partial**: exact SHA-256 dedupe done; perceptual near-duplicates deferred | `stages.ingest` | `tests/test_pipeline.py::test_exact_duplicate_is_flagged_not_reprocessed` |
+| PRE-1 mezzanine + 480p proxy | **done** | `processing.transcode_renditions`, `stages.transcode` | `tests/test_processing.py`, `tests/test_pipeline.py`, `tests/test_gate1.py` |
+| PRE-3 keyframes (per shot + every N s) | **done** (shots via ffmpeg scene score; persisted shot segments are PRE-2, later) | `processing.extract_keyframes`, `stages.keyframes` | `tests/test_processing.py::test_keyframes_*`, `tests/test_gate1.py` |
+| STO-1 immutable object storage | **done** (write-once keys on local disk and Azure; no versioning/immutability policy yet) | `storage.py`, `stages.put_once` | `tests/test_storage.py`, `tests/test_pipeline.py::test_original_is_byte_identical_and_immutable`, `::test_retried_stage_adopts_existing_objects`, `tests/test_remote_storage_pipeline.py` |
+| STO-2 metadata in relational DB | **done** for Phase 0 entities (Video, Asset, ProcessingJob, participants); Segment/Event tables come with PRE-2/ENR | `db.py` | `tests/test_db.py`, all pipeline tests |
+| OPS-1 job dashboard | **done** | `jobs.py` (queue, retries, leases, `dashboard`), `app.py` `/jobs`, `templates/jobs.html` | `tests/test_jobs.py`, `tests/test_dashboard.py` |
+| Gate 1: 10 videos end to end | **passed** | — | `tests/test_gate1.py` |
+| Existing features | **kept** | `app.py`, `processing.resume_pending` (legacy rows only) | `tests/test_existing_features.py` |
